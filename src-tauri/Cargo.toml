@@ -1,0 +1,47 @@
+[package]
+name = "folia"
+version = "0.1.0"
+description = "Lightweight local-first Markdown note manager"
+authors = ["harry <https://mianao.info>"]
+license = "GPL-3.0"
+edition = "2021"
+
+[lib]
+name = "folia_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+walkdir = "2"
+trash = "5"
+notify = "7"
+notify-debouncer-mini = "0.5"
+ignore = "0.4"
+grep-searcher = "0.1"
+grep-regex = "0.1"
+grep-matcher = "0.1"
+encoding_rs = "0.8"
+chardetng = "0.1"
+blake3 = "1"
+percent-encoding = "2"
+mime_guess = "2"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+parking_lot = "0.12"
+portable-pty = "0.8"
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+
+[dev-dependencies]
+tempfile = "3"
+

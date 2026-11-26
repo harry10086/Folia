@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <defs>
+    
+    <linearGradient id="bg-export" x1="256" y1="36" x2="256" y2="476" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1D3E30" />
+      <stop offset="100%" stop-color="#11261D" />
+    </linearGradient>
+    <linearGradient id="sheen-export" x1="256" y1="36" x2="256" y2="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+    </linearGradient>
+    <clipPath id="clip-export">
+      <path d="M 164 36 L 348 36 C 422 36 476 90 476 164 L 476 348 C 476 422 422 476 348 476 L 164 476 C 90 476 36 422 36 348 L 36 164 C 36 90 90 36 164 36 Z" />
+    </clipPath>
+    <filter id="shadow-export" x="-15%" y="-15%" width="130%" height="135%">
+            <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.28" />
+          </filter>
+  
+    
+  </defs>
+  
+      <path d="M 164 36 L 348 36 C 422 36 476 90 476 164 L 476 348 C 476 422 422 476 348 476 L 164 476 C 90 476 36 422 36 348 L 36 164 C 36 90 90 36 164 36 Z" fill="url(#bg-export)" />
+      <path d="M 164 36 L 348 36 C 422 36 476 90 476 164 L 476 348 C 476 422 422 476 348 476 L 164 476 C 90 476 36 422 36 348 L 36 164 C 36 90 90 36 164 36 Z" fill="url(#sheen-export)" clip-path="url(#clip-export)" />
+      <path d="M 164 36 L 348 36 C 422 36 476 90 476 164 L 476 348 C 476 422 422 476 348 476 L 164 476 C 90 476 36 422 36 348 L 36 164 C 36 90 90 36 164 36 Z" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="2" />
+    
+  <g transform="translate(256 256) scale(1.000) translate(-256 -256)" filter="url(#shadow-export)">
+    
+          <!-- Primary vertical spine & sweeping upper botanical folio wing -->
+          <path
+            d="M 148 140 C 148 122 162 110 182 110 L 352 110 C 362 110 368 116 368 126 C 368 176 330 212 274 212 L 214 212 L 214 366 L 160 398 C 153 402 148 397 148 389 Z"
+            fill="#F3F2EC"
+          />
+          <!-- Subtle diagonal paper fold highlight along top-left crease -->
+          <path
+            d="M 182 110 L 246 110 L 214 156 L 214 212 L 148 212 L 148 140 C 148 122 162 110 182 110 Z"
+            fill="#B8D4C5"
+            opacity="0.24"
+          />
+          <!-- Secondary detached folded leaf-tab completing the F rhythm -->
+          <path
+            d="M 236 240 L 334 240 C 342 240 347 245 347 253 C 347 288 318 316 278 316 L 236 316 C 228 316 224 311 224 303 L 224 252 C 224 245 229 240 236 240 Z"
+            fill="#63B88C"
+            opacity="1"
+          />
+          <!-- Delicate folded corner wedge tucking beneath upper leaf -->
+          <path
+            d="M 214 212 L 258 212 C 238 218 224 228 214 242 Z"
+            fill="#B8D4C5"
+            opacity="0.65"
+          />
+        
+  </g>
+  
+</svg>

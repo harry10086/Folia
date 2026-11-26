@@ -1,0 +1,307 @@
+@import "katex/dist/katex.min.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-base: #fafbfc;
+  --bg-surface: #ffffff;
+  --bg-sidebar: #f3f6f9;
+  --bg-elevated: #ffffff;
+  --bg-hover: #e9eff6;
+  --bg-active: #dce7f5;
+  --border-color: #e2e8f0;
+  --text-primary: #1e293b;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --accent: #1d5ec9;
+  --accent-soft: rgba(29, 94, 201, 0.12);
+  --danger: #dc2626;
+  --mark-bg: #fef08a;
+
+  --sidebar-text: #1e293b;
+  --sidebar-text-muted: #94a3b8;
+  --sidebar-hover: #e9eff6;
+  --sidebar-active: #dce7f5;
+  --sidebar-border: #e2e8f0;
+
+  --md-heading: #1e3a5f;
+  --md-bold: #b91c3b;
+  --md-code: #4338ca;
+  --md-code-bg: #eef2f8;
+  --md-link: #0284c7;
+  --md-quote-bar: #64748b;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 9999px;
+  --shadow-sm: none;
+  --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.1);
+
+  --font-ui: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --font-editor: "Consolas", "Microsoft YaHei UI", monospace;
+  --editor-font-size: 15px;
+  --editor-line-height: 1.75;
+  --editor-max-width: 880px;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 35%, transparent);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 60%, transparent);
+}
+
+.cm-editor {
+  height: 100%;
+  font-family: var(--font-editor);
+  font-size: var(--editor-font-size);
+  line-height: var(--editor-line-height);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+.cm-editor.cm-focused {
+  outline: none;
+}
+.cm-scroller {
+  overflow: auto;
+  font-family: var(--font-editor);
+}
+.cm-content {
+  max-width: var(--editor-max-width);
+  margin: 0 auto;
+  padding: 24px 36px 140px 28px;
+  caret-color: var(--accent);
+}
+.cm-gutters {
+  background: var(--bg-surface) !important;
+  color: var(--text-muted) !important;
+  border-right: none !important;
+  padding-left: 8px;
+  font-size: 0.8em;
+  user-select: none;
+}
+.cm-activeLineGutter {
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-weight: 600;
+}
+.cm-activeLine {
+  background: color-mix(in srgb, var(--accent) 5%, transparent) !important;
+}
+.cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: color-mix(in srgb, var(--accent) 22%, transparent) !important;
+}
+
+.cm-md-syntax {
+  color: var(--text-muted);
+  opacity: 0.72;
+}
+.cm-md-h {
+  color: var(--md-heading);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.cm-md-h1 { font-size: 1.72em; line-height: 1.45; padding-top: 8px; }
+.cm-md-h2 { font-size: 1.42em; line-height: 1.45; padding-top: 6px; }
+.cm-md-h3 { font-size: 1.2em; line-height: 1.5; padding-top: 4px; }
+.cm-md-h4 { font-size: 1.08em; }
+.cm-md-bold { color: var(--md-bold); font-weight: 700; }
+.cm-md-italic { font-style: italic; }
+.cm-md-strike { text-decoration: line-through; color: var(--text-muted); }
+.cm-md-underline { text-decoration: underline; text-underline-offset: 3px; }
+.cm-md-highlight { background: var(--mark-bg); padding: 0 3px; border-radius: 3px; }
+.cm-md-sub { font-size: 0.78em; vertical-align: sub; }
+.cm-md-sup { font-size: 0.78em; vertical-align: super; }
+.cm-md-inline-code { background: var(--md-code-bg); color: var(--md-code); padding: 1px 6px; border-radius: 4px; font-size: 0.92em; }
+.cm-md-link { color: var(--md-link); text-decoration: none; cursor: pointer; border-bottom: 1px dashed color-mix(in srgb, var(--md-link) 45%, transparent); }
+.cm-md-link:hover { border-bottom-style: solid; }
+.cm-md-quote-line { border-left: 3px solid var(--md-quote-bar); padding-left: 14px !important; color: var(--text-secondary); }
+.cm-md-frontmatter-line { color: var(--text-muted); font-size: 0.92em; }
+.cm-md-codeblock-line { background: var(--md-code-bg); font-family: var(--font-editor); }
+.cm-md-math-source-line { background: color-mix(in srgb, var(--md-code-bg) 70%, transparent); color: var(--md-code); }
+.cm-md-task-done { text-decoration: line-through; color: var(--text-muted); }
+.cm-md-callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 2px 10px !important; border-radius: 0 6px 6px 0; }
+.cm-md-callout-warning, .cm-md-callout-caution { border-left-color: #d97706; background: rgba(217, 119, 6, 0.1); }
+.cm-md-callout-tip { border-left-color: #16a34a; background: rgba(22, 163, 74, 0.1); }
+.cm-md-callout-title { font-weight: 600; }
+.folia-callout-badge { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; font-size: 0.95em; }
+.folia-md-checkbox { width: 15px; height: 15px; accent-color: var(--accent); vertical-align: middle; margin-right: 4px; cursor: pointer; }
+.folia-md-hr { height: 1px; background: var(--border-color); margin: 14px 0; width: 100%; }
+.folia-md-image-wrap { display: inline-block; margin: 10px 0; max-width: 100%; }
+.folia-md-image { display: block; max-width: 100%; max-height: 460px; border-radius: var(--radius-md); border: 1px solid var(--border-color); cursor: zoom-in; object-fit: contain; }
+.folia-md-image-caption { font-size: 12px; color: var(--text-muted); margin-top: 4px; text-align: center; }
+.folia-md-image-error { display: inline-block; padding: 6px 12px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font-size: 12px; }
+.folia-md-math-block { padding: 12px 16px; margin: 8px 0; overflow-x: auto; text-align: center; background: color-mix(in srgb, var(--md-code-bg) 45%, transparent); border-radius: var(--radius-sm); }
+.folia-md-mermaid { padding: 16px; margin: 10px 0; background: var(--bg-base); border: 1px solid var(--border-color); border-radius: var(--radius-md); display: flex; justify-content: center; overflow-x: auto; }
+.folia-md-mermaid.is-error { color: var(--danger); font-size: 13px; }
+.folia-md-table-wrap { margin: 10px 0; overflow-x: auto; }
+.folia-md-table { border-collapse: collapse; width: 100%; font-size: 0.94em; }
+.folia-md-table th, .folia-md-table td { border: 1px solid var(--border-color); padding: 7px 12px; text-align: left; }
+.folia-md-table th { background: var(--bg-base); font-weight: 600; }
+.folia-md-table code { background: var(--md-code-bg); color: var(--md-code); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+
+.cm-tooltip-autocomplete {
+  background: var(--bg-elevated) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-md) !important;
+  overflow: hidden;
+  font-family: var(--font-ui) !important;
+  font-size: 13px;
+}
+.cm-tooltip-autocomplete ul li[aria-selected] {
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+}
+
+#folia-print-host { display: none; }
+
+@page {
+  size: auto;
+  margin: 14mm 14mm 16mm;
+}
+
+@media print {
+  html,
+  body {
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    color: #111827 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  #app,
+  .folia-global-tooltip,
+  .toast-pill,
+  .tab-drag-ghost {
+    display: none !important;
+  }
+  #folia-print-host {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff;
+    color: #111827;
+    padding: 0;
+    margin: 0;
+  }
+  .folia-print-article {
+    max-width: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+    line-height: 1.72;
+    font-size: 10.5pt;
+    color: #111827;
+    word-break: break-word;
+  }
+  .folia-print-article h1,
+  .folia-print-article h2,
+  .folia-print-article h3,
+  .folia-print-article h4 {
+    color: #0f172a;
+    break-after: avoid;
+    page-break-after: avoid;
+    margin-top: 1.25em;
+    margin-bottom: 0.45em;
+  }
+  .folia-print-article h1 { font-size: 18pt; margin-top: 0; }
+  .folia-print-article h2 { font-size: 14pt; }
+  .folia-print-article h3 { font-size: 12pt; }
+  .folia-print-article p,
+  .folia-print-article li {
+    orphans: 3;
+    widows: 3;
+  }
+  .folia-print-article code {
+    background: #f3f4f6;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: Consolas, Menlo, monospace;
+    font-size: 0.9em;
+  }
+  .folia-print-article pre {
+    background: #f3f4f6;
+    padding: 10px 12px;
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow: visible;
+  }
+  .folia-print-article pre code { background: none; padding: 0; }
+  .folia-print-article blockquote,
+  .folia-print-article .folia-export-callout {
+    border-left: 3px solid #64748b;
+    background: #f8fafc;
+    padding: 6px 12px;
+    margin: 10px 0;
+    border-radius: 4px;
+  }
+  .folia-print-article .callout-title { font-weight: 600; margin-bottom: 4px; }
+  .folia-print-article img,
+  .folia-print-article svg {
+    max-width: 100% !important;
+    height: auto !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .folia-print-article .folia-export-mermaid {
+    text-align: center;
+    margin: 10px 0;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .folia-print-article table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 10px 0;
+  }
+  .folia-print-article thead { display: table-header-group; }
+  .folia-print-article tr { break-inside: avoid; page-break-inside: avoid; }
+  .folia-print-article th,
+  .folia-print-article td {
+    border: 1px solid #d1d5db;
+    padding: 6px 10px;
+    text-align: left;
+  }
+  .folia-print-article th { background: #f3f4f6; font-weight: 600; }
+  .folia-print-article mark { background: #fef08a; padding: 0 2px; }
+}
