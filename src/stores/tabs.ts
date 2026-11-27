@@ -68,6 +68,25 @@ export interface DiffModalState {
 
 export type SplitDirection = "none" | "vertical" | "horizontal";
 
+export interface SavedTabEntry {
+  path: string;
+  workspaceId?: string;
+  pinned?: boolean;
+  editMode?: "live" | "source";
+}
+
+export interface SavedPaneLayout {
+  activePath?: string | null;
+  tabs: SavedTabEntry[];
+}
+
+export interface SavedWorkspaceLayout {
+  splitDirection: SplitDirection;
+  activePaneIndex?: number;
+  paneSizes?: number[];
+  panes: SavedPaneLayout[];
+}
+
 function classifyByPath(path: string): FileKind {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   if (["md", "markdown", "mdown", "mkd", "txt"].includes(ext)) return "markdown";
@@ -111,6 +130,9 @@ export const useTabsStore = defineStore("tabs", () => {
     contentLeft: "",
     contentRight: "",
   });
+
+  const historyModalTabId = ref<string | null>(null);
+  const baselineCapturedPaths = new Set<string>();
 
   const autoSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const recoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -239,7 +261,14 @@ export const useTabsStore = defineStore("tabs", () => {
 
   async function openFile(
     path: string,
-    options?: { paneId?: string; line?: number; workspaceId?: string; pinned?: boolean }
+    options?: {
+      paneId?: string;
+      line?: number;
+      workspaceId?: string;
+      pinned?: boolean;
+      editMode?: "live" | "source";
+      silent?: boolean;
+    }
   ): Promise<OpenTab | null> {
     const targetPaneId = options?.paneId ?? activePaneId.value;
     const pane = panes.value.find((p) => p.id === targetPaneId) ?? panes.value[0];
@@ -283,10 +312,23 @@ export const useTabsStore = defineStore("tabs", () => {
         sizeBytes = doc.sizeBytes;
         isLarge = doc.isLarge;
       } catch (err) {
-        showToast(`打开失败: ${parseIpcError(err).message}`);
+        if (!options?.silent) {
+          showToast(`打开失败: ${parseIpcError(err).message}`);
+        }
         return null;
       }
     }
+
+    const resolvedEditMode: "live" | "source" =
+      kind === "html"
+        ? options?.editMode === "source"
+          ? "source"
+          : "live"
+        : isLarge
+          ? "source"
+          : options?.editMode === "live" || options?.editMode === "source"
+            ? options.editMode
+            : settings.state.defaultEditMode;
 
     const tab: OpenTab = {
       id: `${pane.id}::${path}`,
@@ -304,7 +346,7 @@ export const useTabsStore = defineStore("tabs", () => {
       mtimeMs,
       sizeBytes,
       isLarge,
-      editMode: kind === "html" ? "live" : isLarge ? "source" : settings.state.defaultEditMode,
+      editMode: resolvedEditMode,
       pinned: Boolean(options?.pinned),
       dirty: false,
       saving: false,
@@ -447,7 +489,7 @@ export const useTabsStore = defineStore("tabs", () => {
     );
   }
 
-  async function saveTab(tabId: string, force = false): Promise<boolean> {
+  async function saveTab(tabId: string, force = false, manual = false): Promise<boolean> {
     const tab = findTabById(tabId);
     if (!tab || (tab.kind !== "markdown" && tab.kind !== "html" && tab.kind !== "other")) return false;
     if (tab.saving) return false;
@@ -456,6 +498,29 @@ export const useTabsStore = defineStore("tabs", () => {
     if (timer) {
       clearTimeout(timer);
       autoSaveTimers.delete(tab.id);
+    }
+
+    const settings = useSettingsStore();
+    const prevSaved = tab.savedContent;
+    const normKey = normPath(tab.path);
+
+    // Capture a one-time pre-edit baseline snapshot before overwriting disk on the first edit
+    if (
+      settings.state.historyEnabled &&
+      !baselineCapturedPaths.has(normKey) &&
+      prevSaved !== tab.content
+    ) {
+      baselineCapturedPaths.add(normKey);
+      await ipc
+        .historySaveSnapshot({
+          path: tab.path,
+          content: prevSaved,
+          reason: "open",
+          minIntervalSecs: 0,
+          maxSnapshots: settings.state.historyMaxSnapshots,
+          force: true,
+        })
+        .catch(() => {});
     }
 
     tab.saving = true;
@@ -480,6 +545,21 @@ export const useTabsStore = defineStore("tabs", () => {
           t.externalConflict = null;
         }
       }
+
+      if (settings.state.historyEnabled) {
+        const intervalSecs = Math.max(60, Math.round((settings.state.historyIntervalMinutes || 5) * 60));
+        void ipc
+          .historySaveSnapshot({
+            path: tab.path,
+            content: tab.content,
+            reason: manual ? "manual" : "auto",
+            minIntervalSecs: intervalSecs,
+            maxSnapshots: settings.state.historyMaxSnapshots,
+            force: manual,
+          })
+          .catch(() => {});
+      }
+
       return true;
     } catch (err) {
       const parsed = parseIpcError(err);
@@ -623,6 +703,36 @@ export const useTabsStore = defineStore("tabs", () => {
     diffState.contentRight = tabB.content;
     diffState.conflictTabId = undefined;
     clearSplitSelection();
+  }
+
+  function openHistoryModal(tabId: string) {
+    historyModalTabId.value = tabId;
+  }
+
+  function closeHistoryModal() {
+    historyModalTabId.value = null;
+  }
+
+  async function restoreTabFromHistory(tabId: string, targetContent: string, timeLabel: string) {
+    const tab = findTabById(tabId);
+    if (!tab) return;
+    const settings = useSettingsStore();
+
+    // Always preserve current content as a safety snapshot before restoring
+    await ipc
+      .historySaveSnapshot({
+        path: tab.path,
+        content: tab.content,
+        reason: "before-restore",
+        minIntervalSecs: 0,
+        maxSnapshots: settings.state.historyMaxSnapshots,
+        force: true,
+      })
+      .catch(() => {});
+
+    updateTabContent(tab.id, targetContent);
+    await saveTab(tab.id, false, false);
+    showToast(`已恢复到 ${timeLabel} 的版本（恢复前内容已自动备份）`, 3500);
   }
 
   function closeDiff() {
@@ -989,6 +1099,67 @@ export const useTabsStore = defineStore("tabs", () => {
     void ipc.deleteRecoveryDraft(draft.path).catch(() => {});
   }
 
+  async function restoreLayout(layout: SavedWorkspaceLayout): Promise<void> {
+    const rawPanes = Array.isArray(layout.panes) ? layout.panes.slice(0, 3) : [];
+    const nonEmptyDefs = rawPanes.filter((p) => Array.isArray(p?.tabs) && p.tabs.length > 0);
+    if (nonEmptyDefs.length === 0) return;
+
+    const freshPanes: EditorPane[] = nonEmptyDefs.map((_p, idx) => ({
+      id: idx === 0 ? "pane-1" : createPaneId(),
+      tabs: [],
+      activeTabId: null,
+    }));
+
+    panes.value = freshPanes;
+    splitDirection.value =
+      freshPanes.length > 1 && (layout.splitDirection === "vertical" || layout.splitDirection === "horizontal")
+        ? layout.splitDirection
+        : "none";
+    activePaneId.value = freshPanes[0].id;
+
+    for (let i = 0; i < nonEmptyDefs.length; i++) {
+      const def = nonEmptyDefs[i];
+      const pane = freshPanes[i];
+      for (const entry of def.tabs) {
+        if (!entry?.path) continue;
+        await openFile(entry.path, {
+          paneId: pane.id,
+          workspaceId: entry.workspaceId,
+          pinned: Boolean(entry.pinned),
+          editMode: entry.editMode,
+          silent: true,
+        });
+      }
+      if (def.activePath) {
+        const match = pane.tabs.find((t) => normPath(t.path) === normPath(def.activePath!));
+        if (match) pane.activeTabId = match.id;
+      }
+    }
+
+    // Prune panes whose files were all deleted externally
+    const surviving = panes.value.filter((p) => p.tabs.length > 0);
+    if (surviving.length === 0) {
+      panes.value = [{ id: "pane-1", tabs: [], activeTabId: null }];
+      splitDirection.value = "none";
+      activePaneId.value = "pane-1";
+      return;
+    }
+
+    panes.value = surviving;
+    if (surviving.length <= 1) {
+      splitDirection.value = "none";
+    }
+    const targetIdx = Math.max(0, Math.min(layout.activePaneIndex ?? 0, surviving.length - 1));
+    const targetPane = surviving[targetIdx];
+    activePaneId.value = targetPane.id;
+
+    const targetTab = targetPane.tabs.find((t) => t.id === targetPane.activeTabId);
+    if (targetTab) {
+      const wsStore = useWorkspaceStore();
+      wsStore.revealFileInTree(targetTab.path);
+    }
+  }
+
   async function discardRecoveryDraft(draft: RecoveryDraft) {
     recoveryDrafts.value = recoveryDrafts.value.filter((d) => d.path !== draft.path);
     await ipc.deleteRecoveryDraft(draft.path).catch(() => {});
@@ -1007,12 +1178,17 @@ export const useTabsStore = defineStore("tabs", () => {
     recoveryDrafts,
     toastMessage,
     diffState,
+    historyModalTabId,
+    openHistoryModal,
+    closeHistoryModal,
+    restoreTabFromHistory,
     showToast,
     getDisplayTabTitle,
     clearSplitSelection,
     toggleSplitTabSelection,
     mergeSelectedTabsToColumns,
     openFile,
+    restoreLayout,
     openTerminalForWorkspace,
     updateTabContent,
     saveTab,

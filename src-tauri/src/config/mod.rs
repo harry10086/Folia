@@ -13,8 +13,38 @@ pub struct RecoveryDraft {
     pub updated_at_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowState {
+    pub maximized: bool,
+}
+
 pub fn config_file_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("config.json")
+}
+
+pub fn window_state_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("window_state.json")
+}
+
+pub fn load_window_state(app_data_dir: &Path) -> WindowState {
+    let path = window_state_path(app_data_dir);
+    if !path.exists() {
+        return WindowState::default();
+    }
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<WindowState>(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_window_state(app_data_dir: &Path, state: &WindowState) {
+    if fs::create_dir_all(app_data_dir).is_err() {
+        return;
+    }
+    if let Ok(json) = serde_json::to_string(state) {
+        let _ = crate::fs::write_atomic(&window_state_path(app_data_dir), json.as_bytes());
+    }
 }
 
 pub fn recovery_dir(app_data_dir: &Path) -> PathBuf {

@@ -138,6 +138,21 @@ export interface DetectedShellInfo {
   path: string;
 }
 
+export interface HistoryEntryMeta {
+  id: string;
+  timestampMs: number;
+  hash: string;
+  reason: string;
+  chars: number;
+  lines: number;
+  sizeBytes: number;
+}
+
+export interface HistoryStats {
+  totalSnapshots: number;
+  totalBytes: number;
+}
+
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -395,5 +410,48 @@ export const ipc = {
 
   onTerminalExit(cb: (ev: TerminalExitEvent) => void): Promise<UnlistenFn> {
     return listen<TerminalExitEvent>("terminal:exit", (e) => cb(e.payload));
+  },
+
+  setTrayBehavior(minimizeToTray: boolean, closeToTray: boolean): Promise<void> {
+    return invoke<void>("set_tray_behavior", { minimizeToTray, closeToTray });
+  },
+
+  hideToTray(): Promise<void> {
+    return invoke<void>("hide_to_tray");
+  },
+
+  quitApp(): Promise<void> {
+    return invoke<void>("quit_app");
+  },
+
+  historySaveSnapshot(params: {
+    path: string;
+    content: string;
+    reason: string;
+    minIntervalSecs: number;
+    maxSnapshots: number;
+    force: boolean;
+  }): Promise<HistoryEntryMeta | null> {
+    return invoke<HistoryEntryMeta | null>("history_save_snapshot", params);
+  },
+
+  historyList(path: string): Promise<HistoryEntryMeta[]> {
+    return invoke<HistoryEntryMeta[]>("history_list", { path });
+  },
+
+  historyRead(path: string, id: string): Promise<string> {
+    return invoke<string>("history_read", { path, id });
+  },
+
+  historyDeleteEntry(path: string, id: string): Promise<void> {
+    return invoke<void>("history_delete_entry", { path, id });
+  },
+
+  historyStats(): Promise<HistoryStats> {
+    return invoke<HistoryStats>("history_stats");
+  },
+
+  historyClearAll(): Promise<number> {
+    return invoke<number>("history_clear_all");
   },
 };

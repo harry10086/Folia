@@ -1,15 +1,17 @@
 use crate::error::FoliaError;
-use crate::fs::{classify_extension, path_to_string, strip_verbatim_prefix, FileKind};
+use crate::fs::{path_to_string, strip_verbatim_prefix};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::{BinaryDetection, SearcherBuilder};
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+
+const MAX_SEARCHABLE_FILE_BYTES: u64 = 2 * 1024 * 1024; // 2 MB
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,9 +60,83 @@ pub struct SearchResponse {
     pub cancelled: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SearchManager {
-    active_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    active_cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+}
+
+fn is_ignored_dir_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "dist-ssr"
+            | "build"
+            | ".obsidian"
+            | ".trash"
+            | ".vscode"
+            | ".idea"
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | "_resources"
+            | ".next"
+            | ".nuxt"
+            | "vendor"
+    ) || name.starts_with(".folia.tmp.")
+}
+
+fn is_searchable_text_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "md" | "markdown"
+            | "mdown"
+            | "mkd"
+            | "txt"
+            | "html"
+            | "htm"
+            | "xml"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "csv"
+            | "tsv"
+            | "rst"
+            | "org"
+            | "tex"
+            | "css"
+            | "scss"
+            | "less"
+            | "js"
+            | "ts"
+            | "jsx"
+            | "tsx"
+            | "vue"
+            | "svelte"
+            | "rs"
+            | "py"
+            | "go"
+            | "java"
+            | "c"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "cs"
+            | "php"
+            | "rb"
+            | "sh"
+            | "bash"
+            | "ps1"
+            | "bat"
+            | "sql"
+            | "log"
+    )
 }
 
 impl SearchManager {
@@ -95,16 +171,22 @@ impl SearchManager {
             regex_escape(query)
         };
 
-        let matcher = RegexMatcherBuilder::new()
-            .case_insensitive(!req.case_sensitive)
-            .word(req.whole_word)
-            .build(&pattern)
-            .map_err(|e| FoliaError::Search(format!("无效搜索表达式: {e}")))?;
+        let matcher = Arc::new(
+            RegexMatcherBuilder::new()
+                .case_insensitive(!req.case_sensitive)
+                .word(req.whole_word)
+                .build(&pattern)
+                .map_err(|e| FoliaError::Search(format!("无效搜索表达式: {e}")))?,
+        );
 
         let max_results = req.max_results.clamp(1, 2000);
         let matches: Arc<Mutex<Vec<SearchMatch>>> = Arc::new(Mutex::new(Vec::new()));
         let scanned_files = Arc::new(AtomicUsize::new(0));
         let truncated = Arc::new(AtomicBool::new(false));
+
+        let worker_threads = std::thread::available_parallelism()
+            .map(|n| n.get().clamp(2, 8))
+            .unwrap_or(4);
 
         for scope in &req.roots {
             if cancel.load(Ordering::Relaxed) || truncated.load(Ordering::Relaxed) {
@@ -120,105 +202,133 @@ impl SearchManager {
                 .git_ignore(false)
                 .git_global(false)
                 .git_exclude(false)
+                .threads(worker_threads)
                 .filter_entry(|e| {
                     let name = e.file_name().to_string_lossy();
-                    name != ".git" && name != "node_modules" && !name.starts_with(".folia.tmp.")
+                    !is_ignored_dir_name(&name)
                 })
-                .build();
+                .build_parallel();
 
-            let mut searcher = SearcherBuilder::new()
-                .binary_detection(BinaryDetection::quit(b'\x00'))
-                .line_number(true)
-                .build();
+            let ws_id_root = scope.workspace_id.clone();
 
-            for entry in walker.flatten() {
-                if cancel.load(Ordering::Relaxed) || truncated.load(Ordering::Relaxed) {
-                    break;
-                }
-                let path = entry.path();
-                if !path.is_file() {
-                    continue;
-                }
-                let ext = path
-                    .extension()
-                    .map(|e| e.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if matches!(classify_extension(&ext), FileKind::Image | FileKind::Pdf) {
-                    continue;
-                }
-                if matches!(
-                    ext.to_ascii_lowercase().as_str(),
-                    "zip" | "7z" | "rar" | "tar" | "gz" | "exe" | "dll" | "so" | "dylib" | "mp4" | "mp3" | "mov"
-                ) {
-                    continue;
-                }
-
-                scanned_files.fetch_add(1, Ordering::Relaxed);
-                let clean_path = strip_verbatim_prefix(path.to_path_buf());
-                let path_str = path_to_string(&clean_path);
-                let file_name = clean_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let ws_id = scope.workspace_id.clone();
+            walker.run(|| {
+                let mut searcher = SearcherBuilder::new()
+                    .binary_detection(BinaryDetection::quit(b'\x00'))
+                    .line_number(true)
+                    .build();
+                let matcher_ref = Arc::clone(&matcher);
                 let matches_ref = Arc::clone(&matches);
+                let scanned_ref = Arc::clone(&scanned_files);
                 let cancel_ref = Arc::clone(&cancel);
                 let trunc_ref = Arc::clone(&truncated);
-                let matcher_ref = &matcher;
+                let ws_id = ws_id_root.clone();
 
-                let _ = searcher.search_path(
-                    matcher_ref,
-                    path,
-                    UTF8(|line_num, line| {
-                        if cancel_ref.load(Ordering::Relaxed) {
-                            return Ok(false);
+                Box::new(move |entry_res| {
+                    if cancel_ref.load(Ordering::Relaxed) || trunc_ref.load(Ordering::Relaxed) {
+                        return WalkState::Quit;
+                    }
+                    let entry = match entry_res {
+                        Ok(e) => e,
+                        Err(_) => return WalkState::Continue,
+                    };
+                    let path = entry.path();
+                    if !path.is_file() {
+                        return WalkState::Continue;
+                    }
+                    let ext = path
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if !is_searchable_text_ext(&ext) {
+                        return WalkState::Continue;
+                    }
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.len() == 0 || meta.len() > MAX_SEARCHABLE_FILE_BYTES {
+                            return WalkState::Continue;
                         }
-                        let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
-                        let (m_start, m_end) = matcher_ref
-                            .find(trimmed.as_bytes())
-                            .ok()
-                            .flatten()
-                            .map(|m| (m.start(), m.end()))
-                            .unwrap_or((0, 0));
+                    }
 
-                        let preview = if trimmed.len() > 240 {
-                            let start_byte = trimmed
-                                .char_indices()
-                                .map(|(i, _)| i)
-                                .take_while(|&i| i <= m_start.saturating_sub(40))
-                                .last()
-                                .unwrap_or(0);
-                            let end_byte = trimmed
-                                .char_indices()
-                                .map(|(i, _)| i)
-                                .find(|&i| i >= (m_end + 120).min(trimmed.len()))
-                                .unwrap_or(trimmed.len());
-                            trimmed[start_byte..end_byte].to_string()
-                        } else {
-                            trimmed.to_string()
-                        };
+                    scanned_ref.fetch_add(1, Ordering::Relaxed);
+                    let clean_path = strip_verbatim_prefix(path.to_path_buf());
+                    let path_str = path_to_string(&clean_path);
+                    let file_name = clean_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
 
+                    let mut file_matches: Vec<SearchMatch> = Vec::new();
+                    let _ = searcher.search_path(
+                        &*matcher_ref,
+                        path,
+                        UTF8(|line_num, line| {
+                            if cancel_ref.load(Ordering::Relaxed) || trunc_ref.load(Ordering::Relaxed) {
+                                return Ok(false);
+                            }
+                            let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
+                            let (m_start, m_end) = matcher_ref
+                                .find(trimmed.as_bytes())
+                                .ok()
+                                .flatten()
+                                .map(|m| (m.start(), m.end()))
+                                .unwrap_or((0, 0));
+
+                            let preview = if trimmed.len() > 240 {
+                                let start_byte = trimmed
+                                    .char_indices()
+                                    .map(|(i, _)| i)
+                                    .take_while(|&i| i <= m_start.saturating_sub(40))
+                                    .last()
+                                    .unwrap_or(0);
+                                let end_byte = trimmed
+                                    .char_indices()
+                                    .map(|(i, _)| i)
+                                    .find(|&i| i >= (m_end + 120).min(trimmed.len()))
+                                    .unwrap_or(trimmed.len());
+                                trimmed[start_byte..end_byte].to_string()
+                            } else {
+                                trimmed.to_string()
+                            };
+
+                            file_matches.push(SearchMatch {
+                                workspace_id: ws_id.clone(),
+                                path: path_str.clone(),
+                                file_name: file_name.clone(),
+                                line_number: line_num,
+                                line_text: preview,
+                                match_start: m_start,
+                                match_end: m_end,
+                            });
+                            if file_matches.len() >= max_results {
+                                return Ok(false);
+                            }
+                            Ok(true)
+                        }),
+                    );
+
+                    if !file_matches.is_empty() {
                         let mut guard = matches_ref.lock();
-                        if guard.len() >= max_results {
+                        let remaining = max_results.saturating_sub(guard.len());
+                        if remaining == 0 {
                             trunc_ref.store(true, Ordering::Relaxed);
-                            return Ok(false);
+                            return WalkState::Quit;
                         }
-                        guard.push(SearchMatch {
-                            workspace_id: ws_id.clone(),
-                            path: path_str.clone(),
-                            file_name: file_name.clone(),
-                            line_number: line_num,
-                            line_text: preview,
-                            match_start: m_start,
-                            match_end: m_end,
-                        });
-                        Ok(true)
-                    }),
-                );
-            }
+                        if file_matches.len() >= remaining {
+                            guard.extend(file_matches.into_iter().take(remaining));
+                            trunc_ref.store(true, Ordering::Relaxed);
+                            return WalkState::Quit;
+                        } else {
+                            guard.extend(file_matches);
+                        }
+                    }
+
+                    WalkState::Continue
+                })
+            });
         }
 
-        let results = std::mem::take(&mut *matches.lock());
+        let mut results = std::mem::take(&mut *matches.lock());
+        results.sort_by(|a, b| a.path.cmp(&b.path).then(a.line_number.cmp(&b.line_number)));
+
         Ok(SearchResponse {
             matches: results,
             truncated: truncated.load(Ordering::Relaxed),

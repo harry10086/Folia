@@ -11,6 +11,7 @@ import { DEFAULT_GESTURES, type GestureActionId, type GestureDefinition } from "
 
 export interface AppSettings extends ThemeSettings {
   defaultEditMode: "live" | "source";
+  showSourcePreview: boolean;
   showLineNumbers: boolean;
   showOutline: boolean;
   showMinimap: boolean;
@@ -18,6 +19,9 @@ export interface AppSettings extends ThemeSettings {
   wordWrap: boolean;
   autoSaveEnabled: boolean;
   autoSaveDelayMs: number;
+  historyEnabled: boolean;
+  historyIntervalMinutes: number;
+  historyMaxSnapshots: number;
   imageSaveStrategy: "noteSubfolder" | "sameDir" | "workspaceSubfolder";
   imageSubfolderName: string;
   linkInsertFormat: "markdown" | "wikilink";
@@ -35,6 +39,8 @@ export interface AppSettings extends ThemeSettings {
   terminalFontSize: number;
   terminalLineHeight: number;
   terminalCursorStyle: "bar" | "block" | "underline";
+  minimizeToTray: boolean;
+  closeToTray: boolean;
 }
 
 function cloneDefaultGestures(): GestureDefinition[] {
@@ -56,7 +62,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   editorLineHeight: 1.75,
   uiScale: 1.0,
   editorMaxWidth: 880,
+  editorPageLayout: "left",
   defaultEditMode: "live",
+  showSourcePreview: true,
   showLineNumbers: true,
   showOutline: true,
   showMinimap: true,
@@ -64,6 +72,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   wordWrap: true,
   autoSaveEnabled: true,
   autoSaveDelayMs: 1500,
+  historyEnabled: true,
+  historyIntervalMinutes: 5,
+  historyMaxSnapshots: 50,
   imageSaveStrategy: "noteSubfolder",
   imageSubfolderName: "images",
   linkInsertFormat: "markdown",
@@ -81,6 +92,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminalFontSize: 13,
   terminalLineHeight: 1.35,
   terminalCursorStyle: "bar",
+  minimizeToTray: false,
+  closeToTray: false,
 };
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -101,6 +114,12 @@ export const useSettingsStore = defineStore("settings", () => {
 
   function applyTheme() {
     applyThemeToDocument(state);
+  }
+
+  function syncTrayBehavior() {
+    if (isTauriRuntime()) {
+      void ipc.setTrayBehavior(state.minimizeToTray, state.closeToTray).catch(() => {});
+    }
   }
 
   function hydrate(partial: Partial<AppSettings> | undefined) {
@@ -126,6 +145,7 @@ export const useSettingsStore = defineStore("settings", () => {
           : cloneDefaultGestures(),
     });
     applyTheme();
+    syncTrayBehavior();
   }
 
   function setCustomColor(key: keyof CustomThemeColors, value: string) {
@@ -235,6 +255,7 @@ export const useSettingsStore = defineStore("settings", () => {
     }),
     () => {
       applyTheme();
+      syncTrayBehavior();
       if (persistTimer) clearTimeout(persistTimer);
       persistTimer = setTimeout(() => {
         if (externalSaveHook) {

@@ -103,10 +103,15 @@ impl WatcherService {
                     if name.starts_with(".folia.tmp.") || name == ".git" {
                         continue;
                     }
-                    if raw_path
-                        .components()
-                        .any(|c| c.as_os_str() == ".git" || c.as_os_str() == "node_modules")
-                    {
+                    if raw_path.components().any(|c| {
+                        let s = c.as_os_str();
+                        s == ".git"
+                            || s == "node_modules"
+                            || s == "build_dir"
+                            || s == "staging_dir"
+                            || s == "__pycache__"
+                            || s == ".venv"
+                    }) {
                         continue;
                     }
 

@@ -1,4 +1,4 @@
-export const APP_VERSION = "0.1.0";
+export const APP_VERSION = "0.1.1";
 export const APP_AUTHOR = "harry";
 export const APP_AUTHOR_URL = "https://mianao.info";
 export const APP_LICENSE = "GPLv3";

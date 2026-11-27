@@ -48,7 +48,7 @@ import {
   checkGithubUpdate,
   type UpdateCheckResult,
 } from "@/core/update/updater";
-import { ipc, isTauriRuntime, type DetectedShellInfo } from "@/core/ipc/client";
+import { ipc, isTauriRuntime, type DetectedShellInfo, type HistoryStats } from "@/core/ipc/client";
 import { useSettingsStore } from "@/stores/settings";
 
 const props = defineProps<{ open: boolean }>();
@@ -57,15 +57,49 @@ const emit = defineEmits<{ (e: "close"): void }>();
 const settings = useSettingsStore();
 const activeTab = ref<"theme" | "editor" | "shortcuts" | "terminal" | "about">("theme");
 const detectedShells = ref<DetectedShellInfo[]>([]);
+const historyCacheStats = ref<HistoryStats>({ totalSnapshots: 0, totalBytes: 0 });
+const historyClearFeedback = ref<string | null>(null);
+
+async function refreshHistoryStats() {
+  if (!isTauriRuntime()) return;
+  try {
+    historyCacheStats.value = await ipc.historyStats();
+  } catch {
+    // ignore
+  }
+}
+
+async function handleClearAllHistory() {
+  if (!isTauriRuntime()) return;
+  try {
+    const count = await ipc.historyClearAll();
+    await refreshHistoryStats();
+    historyClearFeedback.value = count > 0 ? `已清空 ${count} 份历史快照` : "当前没有历史缓存";
+    setTimeout(() => {
+      historyClearFeedback.value = null;
+    }, 2500);
+  } catch {
+    historyClearFeedback.value = "清空历史缓存失败";
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 watch(
   () => props.open,
   async (isOpen) => {
-    if (isOpen && isTauriRuntime() && detectedShells.value.length === 0) {
-      try {
-        detectedShells.value = await ipc.terminalListShells();
-      } catch {
-        // ignore
+    if (isOpen && isTauriRuntime()) {
+      void refreshHistoryStats();
+      if (detectedShells.value.length === 0) {
+        try {
+          detectedShells.value = await ipc.terminalListShells();
+        } catch {
+          // ignore
+        }
       }
     }
   }
@@ -435,7 +469,7 @@ onBeforeUnmount(() => {
             界面主题与字体
           </button>
           <button class="s-nav-item" :class="{ active: activeTab === 'editor' }" @click="activeTab = 'editor'">
-            编辑器、保存与附件
+            常规、编辑器与附件
           </button>
           <button class="s-nav-item" :class="{ active: activeTab === 'shortcuts' }" @click="activeTab = 'shortcuts'">
             快捷键与鼠标手势
@@ -688,6 +722,20 @@ onBeforeUnmount(() => {
                 <button :class="{ active: settings.state.defaultEditMode === 'source' }" @click="settings.state.defaultEditMode = 'source'">源码模式</button>
               </div>
             </div>
+            <div class="form-row">
+              <span class="row-label">页面内容布局</span>
+              <div class="segmented">
+                <button :class="{ active: settings.state.editorPageLayout === 'left' }" @click="settings.state.editorPageLayout = 'left'">靠左显示</button>
+                <button :class="{ active: settings.state.editorPageLayout === 'center' }" @click="settings.state.editorPageLayout = 'center'">页面居中</button>
+              </div>
+            </div>
+            <div v-if="settings.state.editorPageLayout === 'center'" class="form-row">
+              <span class="row-label">居中内容最大宽度</span>
+              <div class="inline-controls">
+                <input type="number" v-model.number="settings.state.editorMaxWidth" step="20" min="560" max="1400" class="num-input" />
+                <span class="unit">px</span>
+              </div>
+            </div>
             <div class="form-row"><span class="row-label">显示行号</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.showLineNumbers" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.showLineNumbers ? "开启" : "关闭" }}</span></label></div>
             <div class="form-row"><span class="row-label">显示右侧缩略图</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.showMinimap" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.showMinimap ? "开启" : "关闭" }}</span></label></div>
             <div class="form-row"><span class="row-label">自动换行</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.wordWrap" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.wordWrap ? "开启" : "关闭" }}</span></label></div>
@@ -706,6 +754,43 @@ onBeforeUnmount(() => {
               <div class="inline-controls"><input type="number" v-model.number="settings.state.autoSaveDelayMs" step="200" min="300" max="10000" class="num-input" /><span class="unit">毫秒 (ms)</span></div>
             </div>
 
+            <h2 class="section-title" style="margin-top: 24px">本地版本历史（不写入笔记库）</h2>
+            <div class="form-row">
+              <span class="row-label">开启本地版本历史</span>
+              <label class="toggle-wrap">
+                <input type="checkbox" v-model="settings.state.historyEnabled" />
+                <span class="toggle-track" />
+                <span class="toggle-text">{{ settings.state.historyEnabled ? "开启" : "关闭" }}</span>
+              </label>
+            </div>
+            <div v-if="settings.state.historyEnabled" class="form-row">
+              <span class="row-label">自动快照间隔</span>
+              <div class="inline-controls">
+                <input type="number" v-model.number="settings.state.historyIntervalMinutes" step="1" min="1" max="60" class="num-input" />
+                <span class="unit">分钟（Ctrl+S 手动保存会立即记录）</span>
+              </div>
+            </div>
+            <div v-if="settings.state.historyEnabled" class="form-row">
+              <span class="row-label">单文件最多保留版本</span>
+              <div class="inline-controls">
+                <input type="number" v-model.number="settings.state.historyMaxSnapshots" step="5" min="5" max="200" class="num-input" />
+                <span class="unit">个（超出自动清理最旧版本）</span>
+              </div>
+            </div>
+            <div class="form-row">
+              <span class="row-label">历史缓存管理</span>
+              <div class="inline-controls">
+                <span class="unit">已缓存 {{ historyCacheStats.totalSnapshots }} 份 · {{ formatBytes(historyCacheStats.totalBytes) }}</span>
+                <button class="mini-action-btn" @click="handleClearAllHistory">
+                  <Trash2 :size="12" /> 清空全部历史
+                </button>
+                <span v-if="historyClearFeedback" class="yaml-ok-msg">{{ historyClearFeedback }}</span>
+              </div>
+            </div>
+            <p class="color-mode-hint">
+              历史快照仅存放在 Folia 应用数据目录（便携版为 <code>data/history/</code>），绝不在你的笔记库中生成任何隐藏文件。
+            </p>
+
             <h2 class="section-title" style="margin-top: 24px">图片与附件保存位置</h2>
             <div class="form-row">
               <span class="row-label">粘贴/拖入图片位置</span>
@@ -719,6 +804,27 @@ onBeforeUnmount(() => {
               <span class="row-label">子文件夹名称</span>
               <input v-model="settings.state.imageSubfolderName" class="pill-input" placeholder="images" />
             </div>
+
+            <h2 class="section-title" style="margin-top: 24px">窗口与系统托盘</h2>
+            <div class="form-row">
+              <span class="row-label">点击最小化按钮时最小化到系统托盘</span>
+              <label class="toggle-wrap">
+                <input type="checkbox" v-model="settings.state.minimizeToTray" />
+                <span class="toggle-track" />
+                <span class="toggle-text">{{ settings.state.minimizeToTray ? "开启" : "关闭" }}</span>
+              </label>
+            </div>
+            <div class="form-row">
+              <span class="row-label">点击关闭按钮时最小化到系统托盘</span>
+              <label class="toggle-wrap">
+                <input type="checkbox" v-model="settings.state.closeToTray" />
+                <span class="toggle-track" />
+                <span class="toggle-text">{{ settings.state.closeToTray ? "开启" : "关闭" }}</span>
+              </label>
+            </div>
+            <p class="color-mode-hint">
+              开启后窗口将隐藏到任务栏右下角系统托盘；左键点击托盘图标可恢复主窗口，右键菜单可彻底退出 Folia。
+            </p>
           </div>
 
           <!-- TAB 3: EDITABLE SHORTCUTS & MOUSE GESTURES -->

@@ -43,6 +43,7 @@ export interface ThemeSettings {
   editorLineHeight: number;
   uiScale: number;
   editorMaxWidth: number;
+  editorPageLayout: "left" | "center";
 }
 
 export function getPlatformFallbackUiFont(): string {
@@ -106,6 +107,7 @@ export function applyThemeToDocument(settings: ThemeSettings): ThemePalette {
   root.dataset.themeMode = theme.mode;
   root.dataset.darkSidebar = settings.darkSidebarAlways ? "true" : "false";
   root.dataset.colorMode = settings.renderColorMode;
+  root.dataset.editorLayout = settings.editorPageLayout === "center" ? "center" : "left";
 
   const set = (k: string, v: string) => root.style.setProperty(k, v);
 
@@ -123,7 +125,7 @@ export function applyThemeToDocument(settings: ThemeSettings): ThemePalette {
   set("--danger", theme.danger);
   set("--mark-bg", theme.markBg);
 
-  if (settings.darkSidebarAlways && theme.mode === "light") {
+  if (settings.darkSidebarAlways && theme.mode === "light" && !settings.customColors?.bgSidebar) {
     set("--bg-sidebar", "#191c24");
     set("--sidebar-text", "#e2e8f0");
     set("--sidebar-text-muted", "#8b98b0");
@@ -182,7 +184,9 @@ export function applyThemeToDocument(settings: ThemeSettings): ThemePalette {
     : getPlatformFallbackEditorFont();
 
   set("--font-ui", uiFontStack);
+  set("--font-prose", uiFontStack);
   set("--font-editor", editorFontStack);
+  set("--font-code", editorFontStack);
   set("--editor-font-size", `${settings.editorFontSize}px`);
   set("--editor-line-height", `${settings.editorLineHeight}`);
   set("--editor-max-width", settings.editorMaxWidth > 0 ? `${settings.editorMaxWidth}px` : "100%");

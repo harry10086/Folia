@@ -216,12 +216,20 @@ pub fn metadata_mtime_ms(meta: &fs::Metadata) -> u64 {
 }
 
 fn should_skip_entry(name: &str, show_hidden: bool) -> bool {
-    if name == ".git"
-        || name == "node_modules"
-        || name == ".DS_Store"
-        || name == "Thumbs.db"
-        || name == "desktop.ini"
-        || name.starts_with(".folia.tmp.")
+    if matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "build_dir"
+            | "staging_dir"
+            | "__pycache__"
+            | ".venv"
+            | ".next"
+            | ".nuxt"
+            | ".DS_Store"
+            | "Thumbs.db"
+            | "desktop.ini"
+    ) || name.starts_with(".folia.tmp.")
     {
         return true;
     }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Paperclip, FileText, File as FileIcon, Plus, Copy, ExternalLink, RefreshCw } from "lucide-vue-next";
 import { ipc, toAssetUrl, type AttachmentItem } from "@/core/ipc/client";
 import { useTabsStore } from "@/stores/tabs";
+import { useWorkspaceStore } from "@/stores/workspace";
 
 const props = defineProps<{ notePath: string }>();
 
@@ -12,8 +13,16 @@ const emit = defineEmits<{
 }>();
 
 const tabsStore = useTabsStore();
+const wsStore = useWorkspaceStore();
 const items = ref<AttachmentItem[]>([]);
 const loading = ref(false);
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+const currentWorkspaceRevision = computed(() => {
+  if (!props.notePath) return 0;
+  const ws = wsStore.findWorkspaceForPath(props.notePath);
+  return ws ? (wsStore.workspaceRevisions[ws.id] ?? 0) : 0;
+});
 
 async function refresh() {
   if (!props.notePath) {
@@ -24,6 +33,13 @@ async function refresh() {
   try { items.value = await ipc.listAttachments(props.notePath); }
   catch { items.value = []; }
   finally { loading.value = false; }
+}
+
+function scheduleRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    void refresh();
+  }, 120);
 }
 
 function formatSize(bytes: number): string {
@@ -54,7 +70,11 @@ function openItem(item: AttachmentItem) {
 }
 
 watch(() => props.notePath, () => void refresh());
+watch(currentWorkspaceRevision, () => scheduleRefresh());
 onMounted(() => void refresh());
+onBeforeUnmount(() => {
+  if (refreshTimer) clearTimeout(refreshTimer);
+});
 </script>
 
 <template>

@@ -16,10 +16,12 @@ import {
   Printer,
   AlertTriangle,
   GitCompare,
+  History as HistoryIcon,
   FolderOpen,
   FileText,
   Image as ImageIcon,
   PanelLeftOpen,
+  PanelRight,
   Minus,
   Square,
   ChevronLeft,
@@ -422,13 +424,23 @@ function scrollBottom() {
 }
 
 function winMinimize() {
-  if (isTauriRuntime()) void getCurrentWindow().minimize();
+  if (!isTauriRuntime()) return;
+  if (settings.state.minimizeToTray) {
+    void ipc.hideToTray();
+  } else {
+    void getCurrentWindow().minimize();
+  }
 }
 function winToggleMaximize() {
   if (isTauriRuntime()) void getCurrentWindow().toggleMaximize();
 }
 function winClose() {
-  if (isTauriRuntime()) void getCurrentWindow().close();
+  if (!isTauriRuntime()) return;
+  if (settings.state.closeToTray) {
+    void ipc.hideToTray();
+  } else {
+    void getCurrentWindow().close();
+  }
 }
 
 watch(
@@ -633,10 +645,19 @@ defineExpose({ scrollTop, scrollBottom });
             class="tb-btn"
             :class="{ active: activeTab.editMode === 'live' }"
             @click="activeTab.editMode = activeTab.editMode === 'live' ? 'source' : 'live'"
-            :data-tip="activeTab.editMode === 'live' ? '当前：实时预览（点击切换源码双栏预览）' : '当前：源码双栏预览（点击切换实时预览）'"
+            :data-tip="activeTab.editMode === 'live' ? '当前：实时预览（点击切换源码模式）' : '当前：源码模式（点击切换实时预览）'"
           >
             <Eye v-if="activeTab.editMode === 'live'" :size="15" />
             <Code2 v-else :size="15" />
+          </button>
+          <button
+            v-if="activeTab.editMode === 'source' && !activeTab.isLarge"
+            class="tb-btn"
+            :class="{ active: settings.state.showSourcePreview }"
+            @click="settings.state.showSourcePreview = !settings.state.showSourcePreview"
+            :data-tip="settings.state.showSourcePreview ? '隐藏右侧实时预览栏' : '显示右侧实时预览栏'"
+          >
+            <PanelRight :size="15" />
           </button>
           <button
             class="tb-btn"
@@ -661,6 +682,13 @@ defineExpose({ scrollTop, scrollBottom });
             data-tip="底部附件栏 (Ctrl+Shift+A)"
           >
             <Paperclip :size="15" />
+          </button>
+          <button
+            class="tb-btn"
+            @click="tabsStore.openHistoryModal(activeTab.id)"
+            data-tip="本地版本历史（查看/对比/恢复历史快照）"
+          >
+            <HistoryIcon :size="15" />
           </button>
           <button class="tb-btn" @click="emit('export-html', activeTab.id)" data-tip="导出为 HTML (Ctrl+Shift+E)">
             <Download :size="15" />
@@ -750,13 +778,21 @@ defineExpose({ scrollTop, scrollBottom });
           </button>
           <div class="tb-sep" />
           <div class="win-controls">
-            <button class="win-btn" @click="winMinimize" data-tip="最小化">
+            <button
+              class="win-btn"
+              @click="winMinimize"
+              :data-tip="settings.state.minimizeToTray ? '最小化到系统托盘' : '最小化'"
+            >
               <Minus :size="14" />
             </button>
             <button class="win-btn" @click="winToggleMaximize" data-tip="最大化 / 还原">
               <Square :size="12" />
             </button>
-            <button class="win-btn win-close" @click="winClose" data-tip="关闭">
+            <button
+              class="win-btn win-close"
+              @click="winClose"
+              :data-tip="settings.state.closeToTray ? '最小化到系统托盘' : '关闭'"
+            >
               <X :size="14" />
             </button>
           </div>
@@ -821,7 +857,10 @@ defineExpose({ scrollTop, scrollBottom });
               <div
                 class="source-editor-slot"
                 :style="
-                  activeTab.kind === 'markdown' && activeTab.editMode === 'source' && !activeTab.isLarge
+                  activeTab.kind === 'markdown' &&
+                  activeTab.editMode === 'source' &&
+                  !activeTab.isLarge &&
+                  settings.state.showSourcePreview
                     ? { flex: `${sourceSplitPct} 1 0%` }
                     : { flex: '1 1 0%' }
                 "
@@ -838,7 +877,12 @@ defineExpose({ scrollTop, scrollBottom });
               </div>
 
               <template
-                v-if="activeTab.kind === 'markdown' && activeTab.editMode === 'source' && !activeTab.isLarge"
+                v-if="
+                  activeTab.kind === 'markdown' &&
+                  activeTab.editMode === 'source' &&
+                  !activeTab.isLarge &&
+                  settings.state.showSourcePreview
+                "
               >
                 <div
                   class="source-split-resizer"
@@ -855,6 +899,7 @@ defineExpose({ scrollTop, scrollBottom });
                     :note-path="activeTab.path"
                     :scroll-ratio="editorScrollRatio"
                     @image-lightbox="(p) => emit('image-lightbox', p)"
+                    @close="settings.state.showSourcePreview = false"
                   />
                 </div>
               </template>

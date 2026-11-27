@@ -1,18 +1,41 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Compartment, EditorState } from "@codemirror/state";
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "@codemirror/view";
+import {
+  EditorView,
+  keymap,
+  lineNumbers,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  drawSelection,
+  rectangularSelection,
+  crosshairCursor,
+} from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { html as htmlLanguage } from "@codemirror/lang-html";
-import { languages } from "@codemirror/language-data";
-import { defaultHighlightStyle, syntaxHighlighting, bracketMatching } from "@codemirror/language";
+import { HighlightStyle, syntaxHighlighting, bracketMatching } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { autocompletion } from "@codemirror/autocomplete";
-import { createMarkdownLivePreviewExtension } from "@/core/markdown/livePreview";
+import {
+  createMarkdownLivePreviewExtension,
+  refreshLivePreviewEffect,
+} from "@/core/markdown/livePreview";
+import { resolveCodeLanguageForMarkdown } from "@/core/markdown/codeHighlighter";
+import {
+  findWikilinkFile,
+  isWikilinkTargetValid,
+  parseWikilinkTarget,
+} from "@/core/markdown/wikilinks";
+import { createImageHoverPreviewExtension } from "@/core/markdown/imageHoverPreview";
 import { createMarkdownCompletionSource } from "@/core/markdown/slashCommands";
-import { markdownFormatKeymap } from "@/core/markdown/formatCommands";
-import { extractOutline, slugifyHeading, type HeadingItem } from "@/core/markdown/outline";
+import {
+  markdownFormatKeymap,
+  columnEditingKeymap,
+  markdownAutoSurroundExtension,
+} from "@/core/markdown/formatCommands";
+import { extractOutline, findAnchorLine, type HeadingItem } from "@/core/markdown/outline";
 import { ipc, parseIpcError } from "@/core/ipc/client";
 import type { OpenTab } from "@/stores/tabs";
 import { useSettingsStore } from "@/stores/settings";
@@ -41,6 +64,33 @@ const activeLine = ref(1);
 let view: EditorView | null = null;
 let suppressDocChange = false;
 
+const foliaHighlightStyle = HighlightStyle.define([
+  { tag: [tags.heading, tags.heading1, tags.heading2, tags.heading3, tags.heading4, tags.heading5, tags.heading6], color: "var(--md-heading)", fontWeight: "700", textDecoration: "none" },
+  { tag: tags.strong, color: "var(--md-bold)", fontWeight: "700" },
+  { tag: tags.emphasis, fontStyle: "italic" },
+  { tag: tags.strikethrough, textDecoration: "line-through", color: "var(--text-muted)" },
+  { tag: [tags.link, tags.url], color: "var(--md-link)", textDecoration: "none" },
+  { tag: tags.monospace, color: "var(--md-code)" },
+  { tag: tags.quote, color: "var(--text-secondary)" },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: "var(--syn-comment)", fontStyle: "italic" },
+  { tag: [tags.keyword, tags.controlKeyword, tags.definitionKeyword, tags.moduleKeyword, tags.modifier, tags.operatorKeyword, tags.self], color: "var(--syn-keyword)", fontWeight: "500" },
+  { tag: [tags.string, tags.docString, tags.character, tags.attributeValue, tags.special(tags.string)], color: "var(--syn-string)" },
+  { tag: [tags.regexp, tags.escape], color: "var(--syn-regexp)" },
+  { tag: [tags.number, tags.integer, tags.float, tags.unit], color: "var(--syn-number)" },
+  { tag: [tags.bool, tags.null, tags.atom], color: "var(--syn-bool)", fontWeight: "500" },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.definition(tags.function(tags.variableName)), tags.labelName], color: "var(--syn-func)" },
+  { tag: [tags.macroName, tags.meta, tags.processingInstruction, tags.annotation, tags.documentMeta], color: "var(--syn-macro)" },
+  { tag: [tags.typeName, tags.className, tags.namespace, tags.standard(tags.typeName)], color: "var(--syn-type)" },
+  { tag: [tags.tagName], color: "var(--syn-tag)" },
+  { tag: [tags.attributeName, tags.propertyName, tags.definition(tags.propertyName)], color: "var(--syn-attr)" },
+  { tag: [tags.special(tags.variableName), tags.constant(tags.variableName), tags.definition(tags.variableName)], color: "var(--syn-var)" },
+  { tag: [tags.operator, tags.compareOperator, tags.arithmeticOperator, tags.logicOperator, tags.bitwiseOperator, tags.updateOperator, tags.definitionOperator], color: "var(--syn-operator)" },
+  { tag: [tags.punctuation, tags.bracket, tags.angleBracket, tags.squareBracket, tags.paren, tags.brace, tags.separator], color: "var(--syn-punct)" },
+  { tag: [tags.inserted], color: "var(--syn-inserted)" },
+  { tag: [tags.deleted], color: "var(--syn-deleted)" },
+  { tag: [tags.variableName, tags.content], color: "var(--text-primary)" },
+]);
+
 const lineNumbersComp = new Compartment();
 const wordWrapComp = new Compartment();
 const livePreviewComp = new Compartment();
@@ -51,7 +101,14 @@ function buildLivePreviewExt() {
     getNotePath: () => props.tab.path,
     isLiveMode: () => props.tab.editMode === "live",
     isLargeFile: () => props.tab.isLarge,
+    isWikilinkValid: (rawTarget, docText) =>
+      isWikilinkTargetValid(
+        rawTarget,
+        docText,
+        wsStore.getFilesInWorkspace(props.tab.workspaceId)
+      ),
     onNavigateLink: (href, isWiki) => void handleLinkNavigation(href, isWiki),
+    onNavigateFootnote: (footnoteId) => jumpToFootnote(footnoteId),
     onImageClick: (src, alt) => emit("image-lightbox", { src, alt }),
   });
 }
@@ -69,21 +126,24 @@ async function handleLinkNavigation(href: string, isWiki: boolean) {
     return;
   }
 
-  const [filePart, anchor] = target.split("#");
   if (isWiki) {
-    const cleanName = filePart.trim().toLowerCase();
+    const parsed = parseWikilinkTarget(target);
+    if (!parsed.filePart && parsed.anchor) {
+      jumpToHeadingSlug(parsed.anchor);
+      return;
+    }
     const candidates = wsStore.getFilesInWorkspace(props.tab.workspaceId);
-    const match = candidates.find(
-      (f) => f.name.toLowerCase() === cleanName || f.name.toLowerCase() === `${cleanName}.md`
-    );
+    const match = findWikilinkFile(parsed.filePart, candidates);
     if (match) {
       await tabsStore.openFile(match.path, { paneId: props.tab.paneId, workspaceId: match.workspaceId });
-      if (anchor) setTimeout(() => jumpToHeadingSlug(anchor), 100);
+      if (parsed.anchor) setTimeout(() => jumpToHeadingSlug(parsed.anchor), 100);
     } else {
-      tabsStore.showToast(`未在当前工作区找到笔记: ${filePart}`);
+      tabsStore.showToast(`未在当前工作区找到笔记: ${parsed.filePart || target}`);
     }
     return;
   }
+
+  const [filePart, anchor] = target.split("#");
 
   try {
     const decoded = decodeURIComponent(filePart);
@@ -91,6 +151,7 @@ async function handleLinkNavigation(href: string, isWiki: boolean) {
     const ext = abs.split(".").pop()?.toLowerCase() ?? "";
     if (["md", "markdown", "txt", "png", "jpg", "jpeg", "gif", "webp", "svg", "pdf"].includes(ext)) {
       await tabsStore.openFile(abs, { paneId: props.tab.paneId, workspaceId: props.tab.workspaceId });
+      if (anchor) setTimeout(() => jumpToHeadingSlug(anchor), 120);
     } else {
       await ipc.openSystemPath(abs);
     }
@@ -101,10 +162,26 @@ async function handleLinkNavigation(href: string, isWiki: boolean) {
 
 function jumpToHeadingSlug(slug: string) {
   if (!view) return;
-  const targetSlug = slugifyHeading(decodeURIComponent(slug));
-  const headings = extractOutline(props.tab.content);
-  const found = headings.find((h) => h.slug === targetSlug || h.text.toLowerCase() === slug.toLowerCase());
-  if (found) scrollToLine(found.line);
+  const lineNo = findAnchorLine(props.tab.content, slug);
+  if (lineNo !== null) {
+    scrollToLine(lineNo);
+  } else {
+    tabsStore.showToast(`未找到目标标题或锚点: #${slug}`);
+  }
+}
+
+function jumpToFootnote(footnoteId: string) {
+  if (!view) return;
+  const escaped = footnoteId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const defRe = new RegExp(`\\[\\^${escaped}\\]:`);
+  const lines = props.tab.content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (defRe.test(lines[i])) {
+      scrollToLine(i + 1);
+      return;
+    }
+  }
+  tabsStore.showToast(`未找到脚注定义 [^${footnoteId}]:`);
 }
 
 function scrollToLine(lineNumber: number) {
@@ -248,7 +325,7 @@ function mountEditor() {
   const langExt =
     props.tab.kind === "html"
       ? htmlLanguage()
-      : markdown({ base: markdownLanguage, codeLanguages: languages });
+      : markdown({ base: markdownLanguage, codeLanguages: resolveCodeLanguageForMarkdown });
 
   const state = EditorState.create({
     doc: props.tab.content,
@@ -256,15 +333,20 @@ function mountEditor() {
       lineNumbersComp.of(settings.state.showLineNumbers ? lineNumbers() : []),
       wordWrapComp.of(settings.state.wordWrap ? EditorView.lineWrapping : []),
       history(),
+      EditorState.allowMultipleSelections.of(true),
       drawSelection(),
+      rectangularSelection({ eventFilter: (e) => e.altKey && e.button === 0 }),
+      crosshairCursor({ key: "Alt" }),
+      EditorView.clickAddsSelectionRange.of((e) => e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey),
       highlightActiveLine(),
       highlightActiveLineGutter(),
       highlightSelectionMatches(),
       bracketMatching(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      syntaxHighlighting(foliaHighlightStyle),
       langExt,
       ...(isMarkdown ? [autocompletion({ override: [completionSource], activateOnTyping: true })] : []),
       keymap.of([
+        ...columnEditingKeymap,
         ...(isMarkdown ? markdownFormatKeymap : []),
         indentWithTab,
         ...defaultKeymap,
@@ -272,6 +354,12 @@ function mountEditor() {
         ...searchKeymap,
       ]),
       livePreviewComp.of(buildLivePreviewExt()),
+      ...(isMarkdown
+        ? [
+            markdownAutoSurroundExtension,
+            createImageHoverPreviewExtension(() => props.tab.path, () => props.tab.editMode),
+          ]
+        : []),
       EditorView.domEventHandlers({
         paste: (e) => (isMarkdown ? handleDomPaste(e) : false),
         drop: (e) => (isMarkdown ? handleDomDrop(e) : false),
@@ -318,19 +406,35 @@ watch(() => props.tab.content, (newVal) => {
 watch(() => props.tab.editMode, () => {
   view?.dispatch({ effects: livePreviewComp.reconfigure(buildLivePreviewExt()) });
 });
+
+// Re-validate wikilink existence whenever the workspace's file tree changes (delete/rename/create)
+watch(
+  () => (props.tab.workspaceId ? wsStore.workspaceRevisions[props.tab.workspaceId] ?? 0 : 0),
+  () => {
+    if (view && props.tab.kind === "markdown") {
+      view.dispatch({ effects: refreshLivePreviewEffect.of(null) });
+    }
+  }
+);
 watch(() => settings.state.showLineNumbers, (show) => {
   view?.dispatch({ effects: lineNumbersComp.reconfigure(show ? lineNumbers() : []) });
 });
 watch(() => settings.state.wordWrap, (wrap) => {
   view?.dispatch({ effects: wordWrapComp.reconfigure(wrap ? EditorView.lineWrapping : []) });
 });
+watch(
+  () => [settings.state.editorPageLayout, settings.state.editorMaxWidth],
+  () => {
+    requestAnimationFrame(() => view?.requestMeasure());
+  }
+);
 watch(() => props.tab.jumpNonce, () => {
   if (props.tab.jumpToLine) scrollToLine(props.tab.jumpToLine);
 });
 </script>
 
 <template>
-  <div class="editor-wrapper">
+  <div class="editor-wrapper" :data-edit-mode="tab.editMode">
     <div v-if="tab.isLarge" class="large-file-banner">
       当前文件较大（{{ (tab.sizeBytes / 1024).toFixed(0) }} KB），已自动切换为高性能源码模式以保障流畅编辑。
     </div>

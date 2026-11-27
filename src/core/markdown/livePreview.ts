@@ -8,16 +8,32 @@ import {
 } from "@codemirror/view";
 import { RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { toAssetUrl } from "@/core/ipc/client";
+import { highlightCodeBlock } from "@/core/markdown/codeHighlighter";
 
 export interface LivePreviewCallbacks {
   getNotePath: () => string | null;
   isLiveMode: () => boolean;
   isLargeFile: () => boolean;
+  isWikilinkValid?: (rawTarget: string, docText: string) => boolean;
   onNavigateLink: (href: string, isWiki: boolean) => void;
+  onNavigateFootnote?: (footnoteId: string) => void;
   onImageClick?: (src: string, alt: string) => void;
 }
 
-const refreshLivePreviewEffect = StateEffect.define<null>();
+export const refreshLivePreviewEffect = StateEffect.define<null>();
+const editorFocusEffect = StateEffect.define<boolean>();
+
+const editorFocusedField = StateField.define<boolean>({
+  create() {
+    return false;
+  },
+  update(value, tr) {
+    for (const e of tr.effects) {
+      if (e.is(editorFocusEffect)) return e.value;
+    }
+    return value;
+  },
+});
 
 const EMOJI_SHORTCODES: Record<string, string> = {
   rocket: "🚀",
@@ -95,32 +111,79 @@ export function resolveImageSrc(rawSrc: string, notePath: string | null): string
   return toAssetUrl(abs, undefined, notePath);
 }
 
+class BulletWidget extends WidgetType {
+  constructor(readonly depth: number) {
+    super();
+  }
+  eq(other: BulletWidget) {
+    return other.depth === this.depth;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = `folia-md-bullet depth-${Math.min(this.depth, 2)}`;
+    span.textContent = this.depth === 0 ? "•" : this.depth === 1 ? "◦" : "▪";
+    return span;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
 class CheckboxWidget extends WidgetType {
   constructor(
     readonly checked: boolean,
-    readonly pos: number
+    readonly boxPos: number
   ) {
     super();
   }
   eq(other: CheckboxWidget) {
-    return other.checked === this.checked && other.pos === this.pos;
+    return other.checked === this.checked && other.boxPos === this.boxPos;
   }
   toDOM(view: EditorView) {
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = this.checked;
-    input.className = "folia-md-checkbox";
-    input.addEventListener("mousedown", (e) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `folia-md-checkbox-btn${this.checked ? " is-checked" : ""}`;
+    btn.setAttribute("aria-checked", String(this.checked));
+    btn.setAttribute("role", "checkbox");
+    if (this.checked) {
+      btn.innerHTML = `<svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><polyline points="2.2 6.3 4.9 9 9.8 3.2"/></svg>`;
+    }
+    btn.addEventListener("mousedown", (e) => {
       e.preventDefault();
+      e.stopPropagation();
       const next = this.checked ? "[ ]" : "[x]";
       view.dispatch({
-        changes: { from: this.pos, to: this.pos + 3, insert: next },
+        changes: { from: this.boxPos, to: this.boxPos + 3, insert: next },
       });
     });
-    return input;
+    return btn;
   }
   ignoreEvent() {
     return true;
+  }
+}
+
+const widgetResizeObservers = new WeakMap<HTMLElement, ResizeObserver>();
+
+function observeWidgetResize(el: HTMLElement, view: EditorView) {
+  if (typeof ResizeObserver === "undefined") return;
+  let lastH = el.getBoundingClientRect().height;
+  const ro = new ResizeObserver((entries) => {
+    const nextH = entries[0]?.contentRect.height ?? el.getBoundingClientRect().height;
+    if (Math.abs(nextH - lastH) > 0.5 && view.dom.isConnected) {
+      lastH = nextH;
+      view.requestMeasure();
+    }
+  });
+  ro.observe(el);
+  widgetResizeObservers.set(el, ro);
+}
+
+function unobserveWidgetResize(el: HTMLElement) {
+  const ro = widgetResizeObservers.get(el);
+  if (ro) {
+    ro.disconnect();
+    widgetResizeObservers.delete(el);
   }
 }
 
@@ -128,14 +191,19 @@ class ImagePreviewWidget extends WidgetType {
   constructor(
     readonly src: string,
     readonly alt: string,
-    readonly onClick?: (src: string, alt: string) => void
+    readonly onClick?: (src: string, alt: string) => void,
+    readonly widthPx?: number
   ) {
     super();
   }
   eq(other: ImagePreviewWidget) {
-    return other.src === this.src && other.alt === this.alt;
+    return (
+      other.src === this.src &&
+      other.alt === this.alt &&
+      other.widthPx === this.widthPx
+    );
   }
-  toDOM() {
+  toDOM(view: EditorView) {
     const wrap = document.createElement("div");
     wrap.className = "folia-md-image-wrap";
     const img = document.createElement("img");
@@ -143,7 +211,13 @@ class ImagePreviewWidget extends WidgetType {
     img.alt = this.alt;
     img.loading = "lazy";
     img.className = "folia-md-image";
+    if (this.widthPx && this.widthPx > 0) {
+      img.style.width = `${this.widthPx}px`;
+    }
     img.addEventListener("click", () => this.onClick?.(this.src, this.alt));
+    img.addEventListener("load", () => {
+      if (view.dom.isConnected) view.requestMeasure();
+    });
     img.addEventListener("error", () => {
       wrap.classList.add("is-error");
       const err = document.createElement("span");
@@ -151,6 +225,7 @@ class ImagePreviewWidget extends WidgetType {
       err.textContent = `无法加载图片: ${this.alt || this.src}`;
       wrap.innerHTML = "";
       wrap.appendChild(err);
+      if (view.dom.isConnected) view.requestMeasure();
     });
     wrap.appendChild(img);
     if (this.alt) {
@@ -159,7 +234,11 @@ class ImagePreviewWidget extends WidgetType {
       cap.textContent = this.alt;
       wrap.appendChild(cap);
     }
+    observeWidgetResize(wrap, view);
     return wrap;
+  }
+  destroy(dom: HTMLElement) {
+    unobserveWidgetResize(dom);
   }
   ignoreEvent() {
     return true;
@@ -170,6 +249,9 @@ class HrWidget extends WidgetType {
   toDOM() {
     const hr = document.createElement("div");
     hr.className = "folia-md-hr";
+    const line = document.createElement("div");
+    line.className = "folia-md-hr-line";
+    hr.appendChild(line);
     return hr;
   }
   ignoreEvent() {
@@ -205,22 +287,55 @@ class MathWidget extends WidgetType {
   eq(other: MathWidget) {
     return other.tex === this.tex && other.displayMode === this.displayMode;
   }
-  toDOM() {
-    const el = document.createElement(this.displayMode ? "div" : "span");
-    el.className = this.displayMode ? "folia-md-math-block" : "folia-md-math-inline";
+  toDOM(view: EditorView) {
+    if (!this.displayMode) {
+      const span = document.createElement("span");
+      span.className = "folia-md-math-inline";
+      span.textContent = this.tex;
+      loadKatex()
+        .then((katex) => {
+          katex.default.render(this.tex, span, {
+            displayMode: false,
+            throwOnError: false,
+            strict: false,
+          });
+          if (view.dom.isConnected) {
+            requestAnimationFrame(() => view.requestMeasure());
+          }
+        })
+        .catch(() => {
+          span.textContent = this.tex;
+        });
+      return span;
+    }
+
+    // Wrap block widget in a zero-margin padded shell so CodeMirror 6's
+    // getBoundingClientRect().height measurement includes all vertical spacing!
+    const shell = document.createElement("div");
+    shell.className = "folia-block-shell";
+    const el = document.createElement("div");
+    el.className = "folia-md-math-block";
     el.textContent = this.tex;
+    shell.appendChild(el);
+    observeWidgetResize(shell, view);
     loadKatex()
       .then((katex) => {
         katex.default.render(this.tex, el, {
-          displayMode: this.displayMode,
+          displayMode: true,
           throwOnError: false,
           strict: false,
         });
+        if (view.dom.isConnected) {
+          requestAnimationFrame(() => view.requestMeasure());
+        }
       })
       .catch(() => {
         el.textContent = this.tex;
       });
-    return el;
+    return shell;
+  }
+  destroy(dom: HTMLElement) {
+    unobserveWidgetResize(dom);
   }
   ignoreEvent() {
     return false;
@@ -234,23 +349,157 @@ class MermaidWidget extends WidgetType {
   eq(other: MermaidWidget) {
     return other.code === this.code;
   }
-  toDOM() {
+  toDOM(view: EditorView) {
+    const shell = document.createElement("div");
+    shell.className = "folia-block-shell";
     const box = document.createElement("div");
     box.className = "folia-md-mermaid";
     box.textContent = "正在渲染 Mermaid 图表...";
+    shell.appendChild(box);
+    observeWidgetResize(shell, view);
     const renderId = `folia-mmd-${Math.random().toString(36).slice(2, 9)}`;
     loadMermaid()
       .then(async (mermaid) => {
         const { svg } = await mermaid.render(renderId, this.code);
         box.innerHTML = svg;
+        const svgEl = box.querySelector("svg");
+        if (svgEl) {
+          if (svgEl.getAttribute("viewBox")) {
+            svgEl.removeAttribute("height");
+          }
+          svgEl.style.maxWidth = "100%";
+          svgEl.style.height = "auto";
+        }
+        // CRITICAL: Inform CodeMirror 6 to re-measure the block height after async SVG render!
+        if (view.dom.isConnected) {
+          requestAnimationFrame(() => {
+            view.requestMeasure();
+            setTimeout(() => {
+              if (view.dom.isConnected) view.requestMeasure();
+            }, 60);
+          });
+        }
       })
       .catch((err) => {
         box.classList.add("is-error");
         box.textContent = `Mermaid 语法错误: ${err?.message ?? err}`;
+        if (view.dom.isConnected) view.requestMeasure();
       });
-    return box;
+    return shell;
+  }
+  destroy(dom: HTMLElement) {
+    unobserveWidgetResize(dom);
   }
   ignoreEvent() {
+    return false;
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+class CodeBlockWidget extends WidgetType {
+  constructor(
+    readonly code: string,
+    readonly lang: string
+  ) {
+    super();
+  }
+  eq(other: CodeBlockWidget) {
+    return other.code === this.code && other.lang === this.lang;
+  }
+  toDOM() {
+    const shell = document.createElement("div");
+    shell.className = "folia-block-shell";
+    const card = document.createElement("div");
+    card.className = "folia-code-card";
+
+    // Top-right toolbar: line-number toggle + copy button + uppercase language label
+    const bar = document.createElement("div");
+    bar.className = "folia-code-bar";
+
+    const lnBtn = document.createElement("button");
+    lnBtn.type = "button";
+    lnBtn.className = "folia-code-action-btn";
+    lnBtn.setAttribute("data-tip", "切换代码块行号");
+    lnBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/></svg>`;
+    lnBtn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      card.classList.toggle("hide-line-nums");
+    });
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "folia-code-action-btn";
+    copyBtn.setAttribute("data-tip", "复制代码");
+    const copySvg = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`;
+    const checkSvg = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+    copyBtn.innerHTML = copySvg;
+    copyBtn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void navigator.clipboard.writeText(this.code).catch(() => {});
+      copyBtn.innerHTML = checkSvg;
+      copyBtn.classList.add("is-copied");
+      setTimeout(() => {
+        copyBtn.innerHTML = copySvg;
+        copyBtn.classList.remove("is-copied");
+      }, 1500);
+    });
+
+    const langBadge = document.createElement("span");
+    langBadge.className = "folia-code-lang";
+    langBadge.textContent = (this.lang || "TEXT").toUpperCase();
+
+    bar.appendChild(lnBtn);
+    bar.appendChild(copyBtn);
+    bar.appendChild(langBadge);
+    card.appendChild(bar);
+
+    const body = document.createElement("div");
+    body.className = "folia-code-body";
+
+    const highlighted = highlightCodeBlock(this.code, this.lang);
+    const codeEls: HTMLSpanElement[] = [];
+
+    for (let i = 0; i < highlighted.lines.length; i++) {
+      const row = document.createElement("div");
+      row.className = "folia-code-row";
+      const ln = document.createElement("span");
+      ln.className = "folia-code-ln";
+      ln.textContent = String(i + 1);
+      const codeEl = document.createElement("span");
+      codeEl.className = "folia-code-text";
+      codeEl.innerHTML = highlighted.lines[i];
+      codeEls.push(codeEl);
+      row.appendChild(ln);
+      row.appendChild(codeEl);
+      body.appendChild(row);
+    }
+
+    if (highlighted.pending) {
+      void highlighted.pending.then((readyLines) => {
+        if (!shell.isConnected) return;
+        const count = Math.min(codeEls.length, readyLines.length);
+        for (let i = 0; i < count; i++) {
+          codeEls[i].innerHTML = readyLines[i];
+        }
+      });
+    }
+
+    card.appendChild(body);
+    shell.appendChild(card);
+    return shell;
+  }
+  ignoreEvent(event: Event) {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest(".folia-code-action-btn")) return true;
     return false;
   }
 }
@@ -263,10 +512,13 @@ class TableWidget extends WidgetType {
     return other.rawMarkdown === this.rawMarkdown;
   }
   toDOM() {
+    const shell = document.createElement("div");
+    shell.className = "folia-block-shell";
     const wrap = document.createElement("div");
     wrap.className = "folia-md-table-wrap";
+    shell.appendChild(wrap);
     const lines = this.rawMarkdown.trim().split("\n");
-    if (lines.length < 2) return wrap;
+    if (lines.length < 2) return shell;
 
     const parseRow = (row: string) =>
       row
@@ -303,27 +555,26 @@ class TableWidget extends WidgetType {
     }
     table.appendChild(tbody);
     wrap.appendChild(table);
-    return wrap;
+    return shell;
   }
   ignoreEvent() {
     return false;
   }
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 function renderSimpleInlineHtml(text: string): string {
-  let out = escapeHtml(text);
-  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const codeTokens: string[] = [];
+  let out = escapeHtml(text).replace(/`([^`]+)`/g, (_m, inner) => {
+    const idx = codeTokens.push(`<code>${inner}</code>`) - 1;
+    return `\u0000CODE${idx}\u0000`;
+  });
+  out = out.replace(/\*\*\*((?:[^*]|\*(?!\*\*))+?)\*\*\*/g, "<strong><em>$1</em></strong>");
+  out = out.replace(/\*\*((?:[^*]|\*(?!\*))+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>");
   out = out.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  out = out.replace(/\+\+([^+]+)\+\+/g, "<u>$1</u>");
   out = out.replace(/==([^=]+)==/g, "<mark>$1</mark>");
+  out = out.replace(/\u0000CODE(\d+)\u0000/g, (_m, idx) => codeTokens[Number(idx)] ?? "");
   return out;
 }
 
@@ -371,6 +622,10 @@ function isRangeActive(
   to: number,
   expandOnlyWhenCollapsed: boolean
 ): boolean {
+  // When the editor is not focused (e.g., right after opening a document, where CM6
+  // defaults selection to pos 0), render every line cleanly in Live Preview without
+  // revealing raw Markdown syntax on line 1.
+  if (!view.hasFocus) return false;
   for (const range of view.state.selection.ranges) {
     if (expandOnlyWhenCollapsed && !range.empty) continue;
     if (range.from <= to && range.to >= from) return true;
@@ -397,7 +652,6 @@ export function assembleSafeDecorationSet(items: DecoItem[]): DecorationSet {
     }
   }
 
-  // 1) Resolve non-overlapping replace ranges (earlier start wins; longer span wins on tie)
   replaceItems.sort((a, b) => a.from - b.from || b.to - a.to);
   const acceptedReplaces: DecoItem[] = [];
   let lastReplaceEnd = -1;
@@ -407,17 +661,26 @@ export function assembleSafeDecorationSet(items: DecoItem[]): DecorationSet {
     lastReplaceEnd = r.to;
   }
 
-  const overlapsAnyReplace = (from: number, to: number) =>
-    acceptedReplaces.some((r) => r.from < to && r.to > from);
-
   const insideAnyReplace = (pos: number) =>
     acceptedReplaces.some((r) => r.from < pos && pos < r.to);
 
-  // 2) Keep only marks & point widgets that do not collide with any replace range
   const finalItems: DecoItem[] = [...lineItems, ...acceptedReplaces];
   for (const m of markItems) {
-    if (!overlapsAnyReplace(m.from, m.to)) {
-      finalItems.push(m);
+    // Split wrapping marks cleanly around inner replace ranges so nested inline
+    // formatting (e.g. `**增量编译，不要 \`make dirclean\`**`) preserves both the
+    // outer style and hidden inner delimiters without RangeSetBuilder collisions.
+    let cur = m.from;
+    for (const r of acceptedReplaces) {
+      if (r.to <= cur) continue;
+      if (r.from >= m.to) break;
+      if (r.from > cur) {
+        finalItems.push({ from: cur, to: r.from, kind: "mark", deco: m.deco });
+      }
+      cur = Math.max(cur, r.to);
+      if (cur >= m.to) break;
+    }
+    if (cur < m.to) {
+      finalItems.push({ from: cur, to: m.to, kind: "mark", deco: m.deco });
     }
   }
   for (const w of widgetItems) {
@@ -426,7 +689,6 @@ export function assembleSafeDecorationSet(items: DecoItem[]): DecorationSet {
     }
   }
 
-  // 3) Sort strictly by CodeMirror 6 RangeSetBuilder ordering: from ASC, startSide ASC, to ASC
   finalItems.sort(
     (a, b) =>
       a.from - b.from ||
@@ -446,6 +708,63 @@ export function assembleSafeDecorationSet(items: DecoItem[]): DecorationSet {
     prevStartSide = startSide;
   }
   return builder.finish();
+}
+
+export interface ParsedAbbreviation {
+  term: string;
+  expansion: string;
+  isStandard: boolean;
+  termStart: number;
+  termEnd: number;
+  colonEnd: number;
+}
+
+/**
+ * Parse Markdown abbreviation definitions:
+ * - Standard Markdown Extra: `*[HTML]: Hyper Text Markup Language`
+ * - Shorthand (non-URL description): `[HTML]: Hyper Text Markup Language`
+ */
+export function parseAbbreviationDef(text: string): ParsedAbbreviation | null {
+  const stdM = /^\*\[([^\]\r\n]+)\]:(\s+)(.+)$/.exec(text);
+  if (stdM) {
+    const term = stdM[1].trim();
+    const expansion = stdM[3].trim();
+    if (!term || !expansion) return null;
+    return {
+      term,
+      expansion,
+      isStandard: true,
+      termStart: 2,
+      termEnd: 2 + stdM[1].length,
+      colonEnd: 2 + stdM[1].length + 2 + stdM[2].length,
+    };
+  }
+
+  // Shorthand `[HTML]: Hyper Text Markup Language` (ignore footnote `[^id]:` and link refs `[id]: https://...`)
+  const shortM = /^\[([^\]\r\n^]+)\]:(\s+)(.+)$/.exec(text);
+  if (shortM) {
+    const term = shortM[1].trim();
+    const expansion = shortM[3].trim();
+    if (!term || !expansion) return null;
+    // Exclude URLs, relative paths, anchor refs, and angle-bracket link destinations
+    if (/^(?:https?:\/\/|mailto:|tel:|ftp:\/\/|\/|\.\.?\/|#|<)/i.test(expansion)) {
+      return null;
+    }
+    // Exclude bare single-token file links like `foo.md` or `img.png`
+    if (!/\s/.test(expansion) && /\.[a-z0-9]{2,5}(?:[#?].*)?$/i.test(expansion)) {
+      return null;
+    }
+    return {
+      term,
+      expansion,
+      isStandard: false,
+      termStart: 1,
+      termEnd: 1 + shortM[1].length,
+      colonEnd: 1 + shortM[1].length + 2 + shortM[2].length,
+    };
+  }
+
+  return null;
 }
 
 function buildLineAndInlineDecorations(
@@ -468,29 +787,64 @@ function buildLineAndInlineDecorations(
     let inCodeFence = false;
     let codeFenceLang = "";
     let inMathBlock = false;
+    let activeCalloutKind: string | null = null;
 
-    const lineContext = new Map<
-      number,
-      { inFrontmatter: boolean; inCodeFence: boolean; codeFenceLang: string; inMathBlock: boolean }
-    >();
+    interface LineCtx {
+      inFrontmatter: boolean;
+      inCodeFence: boolean;
+      codeFenceLang: string;
+      inMathBlock: boolean;
+      calloutKind: string | null;
+      calloutRole: "head" | "body" | null;
+      calloutIsTail: boolean;
+    }
 
-    for (let ln = 1; ln <= maxEndLine; ln++) {
+    const lineContext = new Map<number, LineCtx>();
+    const abbrMap = new Map<string, string>();
+    const abbrDefLines = new Set<number>();
+
+    const scanLimit = cb.isLargeFile() ? maxEndLine : doc.lines;
+    const calloutStartRe = /^\s*>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s+.*|\s*)$/i;
+
+    for (let ln = 1; ln <= scanLimit; ln++) {
       const text = doc.line(ln).text;
       const trimmed = text.trim();
 
       if (ln === 1 && trimmed === "---") {
         inFrontmatter = true;
-        lineContext.set(ln, { inFrontmatter: true, inCodeFence: false, codeFenceLang: "", inMathBlock: false });
+        activeCalloutKind = null;
+        if (ln <= maxEndLine) {
+          lineContext.set(ln, {
+            inFrontmatter: true,
+            inCodeFence: false,
+            codeFenceLang: "",
+            inMathBlock: false,
+            calloutKind: null,
+            calloutRole: null,
+            calloutIsTail: false,
+          });
+        }
         continue;
       }
       if (inFrontmatter) {
-        lineContext.set(ln, { inFrontmatter: true, inCodeFence: false, codeFenceLang: "", inMathBlock: false });
+        if (ln <= maxEndLine) {
+          lineContext.set(ln, {
+            inFrontmatter: true,
+            inCodeFence: false,
+            codeFenceLang: "",
+            inMathBlock: false,
+            calloutKind: null,
+            calloutRole: null,
+            calloutIsTail: false,
+          });
+        }
         if (trimmed === "---" || trimmed === "...") inFrontmatter = false;
         continue;
       }
 
       const fence = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
       if (fence && !inMathBlock) {
+        activeCalloutKind = null;
         if (!inCodeFence) {
           inCodeFence = true;
           codeFenceLang = fence[2].trim().toLowerCase();
@@ -498,20 +852,99 @@ function buildLineAndInlineDecorations(
           inCodeFence = false;
           codeFenceLang = "";
         }
-        lineContext.set(ln, { inFrontmatter: false, inCodeFence: true, codeFenceLang, inMathBlock: false });
+        if (ln <= maxEndLine) {
+          lineContext.set(ln, {
+            inFrontmatter: false,
+            inCodeFence: true,
+            codeFenceLang,
+            inMathBlock: false,
+            calloutKind: null,
+            calloutRole: null,
+            calloutIsTail: false,
+          });
+        }
         continue;
       }
 
       if (!inCodeFence && trimmed === "$$") {
+        activeCalloutKind = null;
         inMathBlock = !inMathBlock;
-        lineContext.set(ln, { inFrontmatter: false, inCodeFence: false, codeFenceLang: "", inMathBlock: true });
+        if (ln <= maxEndLine) {
+          lineContext.set(ln, {
+            inFrontmatter: false,
+            inCodeFence: false,
+            codeFenceLang: "",
+            inMathBlock: true,
+            calloutKind: null,
+            calloutRole: null,
+            calloutIsTail: false,
+          });
+        }
         continue;
       }
 
-      lineContext.set(ln, { inFrontmatter, inCodeFence, codeFenceLang, inMathBlock });
+      if (!inCodeFence && !inMathBlock) {
+        const abbrDef = parseAbbreviationDef(text);
+        if (abbrDef) {
+          abbrMap.set(abbrDef.term, abbrDef.expansion);
+          abbrDefLines.add(ln);
+        }
+
+        const cHead = calloutStartRe.exec(text);
+        if (cHead) {
+          activeCalloutKind = cHead[1].toLowerCase();
+          if (ln <= maxEndLine) {
+            const nextIsQuote = ln < doc.lines && /^\s*>/.test(doc.line(ln + 1).text) && !calloutStartRe.test(doc.line(ln + 1).text);
+            lineContext.set(ln, {
+              inFrontmatter: false,
+              inCodeFence: false,
+              codeFenceLang: "",
+              inMathBlock: false,
+              calloutKind: activeCalloutKind,
+              calloutRole: "head",
+              calloutIsTail: !nextIsQuote,
+            });
+          }
+          continue;
+        }
+
+        if (activeCalloutKind && /^\s*>/.test(text)) {
+          if (ln <= maxEndLine) {
+            const nextIsQuote = ln < doc.lines && /^\s*>/.test(doc.line(ln + 1).text) && !calloutStartRe.test(doc.line(ln + 1).text);
+            lineContext.set(ln, {
+              inFrontmatter: false,
+              inCodeFence: false,
+              codeFenceLang: "",
+              inMathBlock: false,
+              calloutKind: activeCalloutKind,
+              calloutRole: "body",
+              calloutIsTail: !nextIsQuote,
+            });
+          }
+          continue;
+        } else {
+          activeCalloutKind = null;
+        }
+      }
+
+      if (ln <= maxEndLine) {
+        lineContext.set(ln, {
+          inFrontmatter,
+          inCodeFence,
+          codeFenceLang,
+          inMathBlock,
+          calloutKind: null,
+          calloutRole: null,
+          calloutIsTail: false,
+        });
+      }
     }
 
     const processedLines = new Set<number>();
+    const fullDocText = cb.isWikilinkValid ? doc.toString() : "";
+    const wikilinkValidator = cb.isWikilinkValid
+      ? (rawTarget: string) => cb.isWikilinkValid!(rawTarget, fullDocText)
+      : undefined;
 
     for (const range of view.visibleRanges) {
       const startLine = doc.lineAt(range.from).number;
@@ -528,6 +961,7 @@ function buildLineAndInlineDecorations(
 
         if (ctx?.inFrontmatter) {
           items.push({ from: line.from, to: line.from, kind: "line", deco: Decoration.line({ class: "cm-md-frontmatter-line" }) });
+          decorateYamlFrontmatterLine(line.from, text, items);
           continue;
         }
         if (ctx?.inCodeFence) {
@@ -552,6 +986,19 @@ function buildLineAndInlineDecorations(
           } else {
             items.push({ from: line.from, to: markerEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
           }
+
+          // Hide or dim custom heading anchor IDs (`### 三级标题 {#id33}`)
+          const customIdM = /\s+\{#([A-Za-z0-9_\-\u4e00-\u9fa5]+)\}\s*$/.exec(text);
+          if (customIdM) {
+            const idFrom = line.from + customIdM.index;
+            const idTo = line.from + text.length;
+            protectedSpans.push({ start: idFrom, end: idTo });
+            if (live && !lineActive) {
+              items.push({ from: idFrom, to: idTo, kind: "replace", deco: Decoration.replace({}) });
+            } else {
+              items.push({ from: idFrom, to: idTo, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+            }
+          }
         }
 
         if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(text.trim())) {
@@ -569,10 +1016,15 @@ function buildLineAndInlineDecorations(
           const prefixLen = calloutMatch[1].length;
           const kind = calloutMatch[2].toUpperCase();
           const hasTitle = calloutMatch[3].trim().length > 0;
-          items.push({ from: line.from, to: line.from, kind: "line", deco: Decoration.line({ class: `cm-md-callout cm-md-callout-${kind.toLowerCase()}` }) });
+          const tailCls = ctx?.calloutIsTail ? " cm-md-callout-tail" : "";
+          items.push({
+            from: line.from,
+            to: line.from,
+            kind: "line",
+            deco: Decoration.line({ class: `cm-md-callout cm-md-callout-${kind.toLowerCase()} cm-md-callout-head${tailCls}` }),
+          });
           protectedSpans.push({ start: line.from, end: line.from + prefixLen });
           if (live && !lineActive) {
-            // Only replace the `> [!TIP] ` syntax prefix; keep the title text directly selectable & copyable!
             items.push({
               from: line.from,
               to: line.from + prefixLen,
@@ -596,30 +1048,124 @@ function buildLineAndInlineDecorations(
               deco: Decoration.mark({ class: "cm-md-syntax" }),
             });
           }
+        } else if (ctx?.calloutKind && ctx.calloutRole === "body" && /^\s*>/.test(text)) {
+          const tailCls = ctx.calloutIsTail ? " cm-md-callout-tail" : "";
+          items.push({
+            from: line.from,
+            to: line.from,
+            kind: "line",
+            deco: Decoration.line({ class: `cm-md-callout cm-md-callout-${ctx.calloutKind} cm-md-callout-body${tailCls}` }),
+          });
+          const qm = /^\s*>\s?/.exec(text);
+          if (qm) {
+            protectedSpans.push({ start: line.from, end: line.from + qm[0].length });
+            if (live && !lineActive) {
+              items.push({ from: line.from, to: line.from + qm[0].length, kind: "replace", deco: Decoration.replace({}) });
+            } else {
+              items.push({ from: line.from, to: line.from + qm[0].length, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+            }
+          }
         } else if (/^\s*>/.test(text)) {
           items.push({ from: line.from, to: line.from, kind: "line", deco: Decoration.line({ class: "cm-md-quote-line" }) });
           const qm = /^\s*>\s?/.exec(text);
           if (qm) {
             protectedSpans.push({ start: line.from, end: line.from + qm[0].length });
-            items.push({ from: line.from, to: line.from + qm[0].length, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+            if (live && !lineActive) {
+              items.push({ from: line.from, to: line.from + qm[0].length, kind: "replace", deco: Decoration.replace({}) });
+            } else {
+              items.push({ from: line.from, to: line.from + qm[0].length, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+            }
           }
         }
 
-        const taskMatch = /^(\s*[-*+]\s+)(\[[ xX]\])/.exec(text);
+        // Abbreviation definition line (`*[HTML]: Hyper Text Markup Language` or `[HTML]: ...`)
+        if (abbrDefLines.has(ln)) {
+          const def = parseAbbreviationDef(text);
+          if (def) {
+            items.push({ from: line.from, to: line.from, kind: "line", deco: Decoration.line({ class: "cm-md-abbr-def-line" }) });
+            const tStart = line.from + def.termStart;
+            const tEnd = line.from + def.termEnd;
+            const cEnd = line.from + def.colonEnd;
+            if (live && !lineActive) {
+              if (tStart > line.from) {
+                items.push({ from: line.from, to: tStart, kind: "replace", deco: Decoration.replace({}) });
+              }
+              items.push({ from: tStart, to: tEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-abbr-def-term" }) });
+              items.push({ from: tEnd, to: cEnd, kind: "replace", deco: Decoration.replace({}) });
+              if (cEnd < line.to) {
+                items.push({ from: cEnd, to: line.to, kind: "mark", deco: Decoration.mark({ class: "cm-md-abbr-def-desc" }) });
+              }
+              continue;
+            } else {
+              items.push({ from: line.from, to: tStart, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+              items.push({ from: tStart, to: tEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-abbr-def-term" }) });
+              items.push({ from: tEnd, to: cEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+              continue;
+            }
+          }
+        }
+
+        // Task list: replace `- [x]` (hiding `- ` prefix!) with custom rounded checkbox button
+        const taskMatch = /^(\s*)([-*+]\s+)(\[[ xX]\])/.exec(text);
         if (taskMatch) {
-          const boxStart = line.from + taskMatch[1].length;
-          const checked = taskMatch[2].toLowerCase() === "[x]";
-          protectedSpans.push({ start: boxStart, end: boxStart + 3 });
+          const indentLen = taskMatch[1].length;
+          const dashStart = line.from + indentLen;
+          const boxStart = dashStart + taskMatch[2].length;
+          const boxEnd = boxStart + 3;
+          const checked = taskMatch[3].toLowerCase() === "[x]";
+          protectedSpans.push({ start: dashStart, end: boxEnd });
+          items.push({ from: line.from, to: line.from, kind: "line", deco: Decoration.line({ class: "cm-md-list-line cm-md-task-line" }) });
           if (live && !lineActive) {
             items.push({
-              from: boxStart,
-              to: boxStart + 3,
+              from: dashStart,
+              to: boxEnd,
               kind: "replace",
               deco: Decoration.replace({ widget: new CheckboxWidget(checked, boxStart) }),
             });
           }
-          if (checked && boxStart + 3 < line.to) {
-            items.push({ from: boxStart + 3, to: line.to, kind: "mark", deco: Decoration.mark({ class: "cm-md-task-done" }) });
+          if (checked && boxEnd < line.to) {
+            items.push({ from: boxEnd, to: line.to, kind: "mark", deco: Decoration.mark({ class: "cm-md-task-done" }) });
+          }
+        } else {
+          // Unordered list bullet dots (• / ◦ / ▪) by nesting depth
+          const ulMatch = /^(\s*)([-*+])(\s+)/.exec(text);
+          if (ulMatch) {
+            const indentSpaces = ulMatch[1].replace(/\t/g, "  ").length;
+            const depth = Math.floor(indentSpaces / 2);
+            const markerFrom = line.from + ulMatch[1].length;
+            const markerTo = markerFrom + ulMatch[2].length;
+            protectedSpans.push({ start: markerFrom, end: markerTo });
+            items.push({ from: line.from, to: line.from, kind: "line", deco: Decoration.line({ class: "cm-md-list-line" }) });
+            if (live && !lineActive) {
+              items.push({
+                from: markerFrom,
+                to: markerTo,
+                kind: "replace",
+                deco: Decoration.replace({ widget: new BulletWidget(depth) }),
+              });
+            } else {
+              items.push({
+                from: markerFrom,
+                to: markerTo,
+                kind: "mark",
+                deco: Decoration.mark({ class: "cm-md-syntax" }),
+              });
+            }
+          } else {
+            // Ordered list numbers (`1.`, `2.`) with crisp bold monospace accent styling
+            const olMatch = /^(\s*)(\d+\.)(\s+)/.exec(text);
+            if (olMatch) {
+              const numFrom = line.from + olMatch[1].length;
+              const numTo = numFrom + olMatch[2].length;
+              protectedSpans.push({ start: numFrom, end: numTo });
+              items.push({ from: line.from, to: line.from, kind: "line", deco: Decoration.line({ class: "cm-md-list-line" }) });
+              items.push({
+                from: numFrom,
+                to: numTo,
+                kind: "mark",
+                deco: Decoration.mark({ class: "cm-md-ol-marker" }),
+              });
+            }
           }
         }
 
@@ -681,7 +1227,65 @@ function buildLineAndInlineDecorations(
           }
         }
 
-        decorateInlinePatterns(line.from, text, live && !lineActive, items, protectedSpans);
+        // HTML <img src="..." alt="..." width="...">
+        const htmlImgRe = /<img\s+([^>]*?)\s*\/?>/gi;
+        let him: RegExpExecArray | null;
+        while ((him = htmlImgRe.exec(text)) !== null) {
+          const from = line.from + him.index;
+          const to = from + him[0].length;
+          if (protectedSpans.some((s) => from < s.end && to > s.start)) continue;
+          const attrs = him[1];
+          const srcM = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(attrs);
+          if (!srcM) continue;
+          const altM = /\balt\s*=\s*["']([^"']*)["']/i.exec(attrs);
+          const widthM = /\bwidth\s*=\s*["']?(\d+)/i.exec(attrs);
+          const widthPx = widthM ? Number(widthM[1]) : undefined;
+          protectedSpans.push({ start: from, end: to });
+          if (live) {
+            const resolved = resolveImageSrc(srcM[1], notePath);
+            const widget = new ImagePreviewWidget(resolved, altM?.[1] ?? "", cb.onImageClick, widthPx);
+            if (!lineActive && him[0].trim() === text.trim()) {
+              items.push({ from, to, kind: "replace", deco: Decoration.replace({ widget }) });
+            } else {
+              items.push({ from: to, to, kind: "widget", deco: Decoration.widget({ widget, side: 1 }) });
+            }
+          }
+        }
+
+        // Single-line centered HTML: <center>...</center>, <p align="center">...</p>, <div align="center">...</div>
+        const centerHtmlRe = /^<(center|(?:p|div)\s+[^>]*align=["']center["'][^>]*)>(.*)<\/(?:center|p|div)>$/i;
+        const centerM = centerHtmlRe.exec(text.trim());
+        if (centerM) {
+          const leadWs = text.indexOf("<");
+          const openEnd = text.indexOf(">", leadWs) + 1;
+          const closeStart = text.lastIndexOf("</");
+          if (openEnd > leadWs && closeStart >= openEnd) {
+            items.push({ from: line.from, to: line.from, kind: "line", deco: Decoration.line({ class: "cm-md-align-center" }) });
+            const openFrom = line.from + leadWs;
+            const openTo = line.from + openEnd;
+            const closeFrom = line.from + closeStart;
+            const closeTo = line.from + text.trimEnd().length;
+            protectedSpans.push({ start: openFrom, end: openTo });
+            protectedSpans.push({ start: closeFrom, end: closeTo });
+            if (live && !lineActive) {
+              items.push({ from: openFrom, to: openTo, kind: "replace", deco: Decoration.replace({}) });
+              items.push({ from: closeFrom, to: closeTo, kind: "replace", deco: Decoration.replace({}) });
+            } else {
+              items.push({ from: openFrom, to: openTo, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+              items.push({ from: closeFrom, to: closeTo, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+            }
+          }
+        }
+
+        decorateInlinePatterns(
+          line.from,
+          text,
+          live && !lineActive,
+          items,
+          protectedSpans,
+          abbrMap,
+          wikilinkValidator
+        );
       }
     }
 
@@ -692,106 +1296,362 @@ function buildLineAndInlineDecorations(
   }
 }
 
-function decorateInlinePatterns(
+function decorateYamlValue(baseFrom: number, rawVal: string, items: DecoItem[]) {
+  if (!rawVal) return;
+  const leadLen = rawVal.length - rawVal.trimStart().length;
+  const valStart = baseFrom + leadLen;
+  const trimmed = rawVal.trim();
+  if (!trimmed) return;
+  const valEnd = valStart + trimmed.length;
+
+  // Comment-only value
+  if (trimmed.startsWith("#")) {
+    items.push({ from: valStart, to: valEnd, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-comment" }) });
+    return;
+  }
+
+  // Quoted string ('...' or "...")
+  if (
+    (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2) ||
+    (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2)
+  ) {
+    items.push({ from: valStart, to: valEnd, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-string" }) });
+    return;
+  }
+
+  // Booleans / null
+  if (/^(?:true|false|yes|no|null|~)$/i.test(trimmed)) {
+    items.push({ from: valStart, to: valEnd, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-bool" }) });
+    return;
+  }
+
+  // Numbers or ISO dates
+  if (/^(?:-?\d+(?:\.\d+)?|\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?)$/.test(trimmed)) {
+    items.push({ from: valStart, to: valEnd, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-number" }) });
+    return;
+  }
+
+  // Plain unquoted string value (e.g. title, author, tags item)
+  items.push({ from: valStart, to: valEnd, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-value" }) });
+}
+
+function decorateYamlFrontmatterLine(lineFrom: number, text: string, items: DecoItem[]) {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+
+  if (trimmed === "---" || trimmed === "...") {
+    items.push({ from: lineFrom, to: lineFrom + text.length, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-delim" }) });
+    return;
+  }
+
+  if (trimmed.startsWith("#")) {
+    items.push({ from: lineFrom, to: lineFrom + text.length, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-comment" }) });
+    return;
+  }
+
+  // YAML list item: `  - ALTRun`
+  const listM = /^(\s*)(-)(\s+)(.*)$/.exec(text);
+  if (listM) {
+    const dashFrom = lineFrom + listM[1].length;
+    const dashTo = dashFrom + 1;
+    items.push({ from: dashFrom, to: dashTo, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-punct" }) });
+    const valOffset = listM[1].length + listM[2].length + listM[3].length;
+    decorateYamlValue(lineFrom + valOffset, listM[4], items);
+    return;
+  }
+
+  // YAML key: value pair
+  const kvM = /^(\s*)([^:#\n][^:\n]*?)(:)(.*)$/.exec(text);
+  if (kvM) {
+    const keyFrom = lineFrom + kvM[1].length;
+    const keyTo = keyFrom + kvM[2].length;
+    const colonTo = keyTo + 1;
+    items.push({ from: keyFrom, to: keyTo, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-key" }) });
+    items.push({ from: keyTo, to: colonTo, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-punct" }) });
+    decorateYamlValue(colonTo, kvM[4], items);
+    return;
+  }
+
+  items.push({ from: lineFrom, to: lineFrom + text.length, kind: "mark", deco: Decoration.mark({ class: "cm-yaml-value" }) });
+}
+
+export function decorateInlinePatterns(
   lineFrom: number,
   text: string,
   hideMarkers: boolean,
   items: DecoItem[],
-  protectedSpans: Array<{ start: number; end: number }> = []
+  protectedSpans: Array<{ start: number; end: number }> = [],
+  abbrMap?: Map<string, string>,
+  isWikilinkValid?: (rawTarget: string) => boolean
 ) {
-  const overlapsProtected = (start: number, end: number) =>
-    protectedSpans.some((s) => start < s.end && end > s.start);
+  // Two-tier span protection so nested Markdown formatting works cleanly:
+  // - `atomicSpans`: opaque ranges (inline code, math, images, link URLs, line prefixes)
+  //   whose interior cannot be parsed as Markdown, while outer formatting CAN wrap around them.
+  // - `claimedMarkers`: delimiter token ranges only (`**`, `*`, `[`, `<u>`, `</u>`, etc.),
+  //   preventing delimiter collision while allowing inner content to be nested freely.
+  const atomicSpans: Array<{ start: number; end: number }> = [...protectedSpans];
+  const claimedMarkers: Array<{ start: number; end: number }> = [];
 
-  const claimSpan = (start: number, end: number) => {
-    protectedSpans.push({ start, end });
+  const overlapsAtomic = (start: number, end: number) =>
+    atomicSpans.some((s) => start < s.end && end > s.start);
+
+  const overlapsMarkers = (start: number, end: number) =>
+    claimedMarkers.some((s) => start < s.end && end > s.start);
+
+  const isBlocked = (start: number, end: number) =>
+    overlapsAtomic(start, end) || overlapsMarkers(start, end);
+
+  const claimAtomic = (start: number, end: number) => {
+    if (end > start) atomicSpans.push({ start, end });
   };
 
-  // 1) Inline code FIRST — content inside backticks must NEVER be parsed as math/emoji/bold/links!
-  const codeRe = /`([^`\n]+)`/g;
+  const claimMarker = (start: number, end: number) => {
+    if (end > start) claimedMarkers.push({ start, end });
+  };
+
+  const emitWrapped = (
+    start: number,
+    innerStart: number,
+    innerEnd: number,
+    end: number,
+    contentDeco: Decoration
+  ) => {
+    if (hideMarkers) {
+      if (innerStart > start) {
+        items.push({ from: start, to: innerStart, kind: "replace", deco: Decoration.replace({}) });
+      }
+      if (innerEnd > innerStart) {
+        items.push({ from: innerStart, to: innerEnd, kind: "mark", deco: contentDeco });
+      }
+      if (end > innerEnd) {
+        items.push({ from: innerEnd, to: end, kind: "replace", deco: Decoration.replace({}) });
+      }
+    } else {
+      if (innerStart > start) {
+        items.push({ from: start, to: innerStart, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+      }
+      if (innerEnd > innerStart) {
+        items.push({ from: innerStart, to: innerEnd, kind: "mark", deco: contentDeco });
+      }
+      if (end > innerEnd) {
+        items.push({ from: innerEnd, to: end, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+      }
+    }
+  };
+
+  // 1) Inline code FIRST (supports single and multi-backtick spans like ``a ` b``)
+  const codeRe = /(`+)(?!`)([^\n]+?)(?<!`)\1(?!`)/g;
   let cm: RegExpExecArray | null;
   while ((cm = codeRe.exec(text)) !== null) {
     const start = lineFrom + cm.index;
     const end = start + cm[0].length;
-    if (overlapsProtected(start, end)) continue;
-    claimSpan(start, end);
-    const innerStart = start + 1;
-    const innerEnd = end - 1;
-    if (hideMarkers) {
-      items.push({ from: start, to: innerStart, kind: "replace", deco: Decoration.replace({}) });
-      items.push({ from: innerStart, to: innerEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-inline-code" }) });
-      items.push({ from: innerEnd, to: end, kind: "replace", deco: Decoration.replace({}) });
-    } else {
-      items.push({ from: start, to: innerStart, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
-      items.push({ from: innerStart, to: innerEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-inline-code" }) });
-      items.push({ from: innerEnd, to: end, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
-    }
+    if (isBlocked(start, end)) continue;
+    const tickLen = cm[1].length;
+    const innerStart = start + tickLen;
+    const innerEnd = end - tickLen;
+    if (innerStart >= innerEnd) continue;
+    claimAtomic(start, end);
+    emitWrapped(start, innerStart, innerEnd, end, Decoration.mark({ class: "cm-md-inline-code" }));
   }
 
-  // 2) Inline KaTeX math ($...$) — claim span so *, ^, ~ inside math are never treated as Markdown!
-  if (hideMarkers) {
-    const mathRe = /(?<!\$)\$([^$\n]+)\$(?!\$)/g;
-    let mm: RegExpExecArray | null;
-    while ((mm = mathRe.exec(text)) !== null) {
-      const start = lineFrom + mm.index;
-      const end = start + mm[0].length;
-      if (overlapsProtected(start, end)) continue;
-      if (!mm[1].trim()) continue;
-      claimSpan(start, end);
+  // 2) Inline KaTeX math ($...$) - always atomic so `*`, `_`, `^` inside math are never parsed as Markdown
+  const mathRe = /(?<!\$)\$([^$\n]+)\$(?!\$)/g;
+  let mm: RegExpExecArray | null;
+  while ((mm = mathRe.exec(text)) !== null) {
+    const start = lineFrom + mm.index;
+    const end = start + mm[0].length;
+    if (isBlocked(start, end)) continue;
+    if (!mm[1].trim()) continue;
+    claimAtomic(start, end);
+    if (hideMarkers) {
       items.push({
         from: start,
         to: end,
         kind: "replace",
         deco: Decoration.replace({ widget: new MathWidget(mm[1], false) }),
       });
+    } else {
+      items.push({ from: start, to: start + 1, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+      items.push({ from: end - 1, to: end, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
     }
   }
 
   // 3) Standard Markdown links [label](url) & Wikilinks [[target]]
-  const linkRe = /(?<!!)\[([^\]]+)\]\(([^)]+)\)/g;
+  const linkRe = /(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)/g;
   let lm: RegExpExecArray | null;
   while ((lm = linkRe.exec(text)) !== null) {
     const start = lineFrom + lm.index;
     const end = start + lm[0].length;
-    if (overlapsProtected(start, end)) continue;
-    claimSpan(start, end);
     const labelStart = start + 1;
     const labelEnd = labelStart + lm[1].length;
+    // Allow inline code or bold/italic inside `[label]`, while protecting `[` and `](url)`
+    if (isBlocked(start, labelStart) || isBlocked(labelEnd, end)) continue;
+    claimMarker(start, labelStart);
+    claimAtomic(labelEnd, end);
     const attrs = { "data-folia-href": lm[2], "data-folia-wiki": "false", title: `Ctrl/Cmd + 点击打开: ${lm[2]}` };
-
-    if (hideMarkers) {
-      items.push({ from: start, to: labelStart, kind: "replace", deco: Decoration.replace({}) });
-      items.push({ from: labelStart, to: labelEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-link", attributes: attrs }) });
-      items.push({ from: labelEnd, to: end, kind: "replace", deco: Decoration.replace({}) });
-    } else {
-      items.push({ from: start, to: labelStart, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
-      items.push({ from: labelStart, to: labelEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-link", attributes: attrs }) });
-      items.push({ from: labelEnd, to: end, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
-    }
+    emitWrapped(start, labelStart, labelEnd, end, Decoration.mark({ class: "cm-md-link", attributes: attrs }));
   }
 
-  const wikiRe = /(?<!!)\[\[([^\]]+)\]\]/g;
+  const wikiRe = /(?<!!)\[\[([^\]\n]+)\]\]/g;
   let wm: RegExpExecArray | null;
   while ((wm = wikiRe.exec(text)) !== null) {
     const start = lineFrom + wm.index;
     const end = start + wm[0].length;
-    if (overlapsProtected(start, end)) continue;
-    claimSpan(start, end);
+    if (isBlocked(start, end)) continue;
+    claimAtomic(start, end);
     const innerStart = start + 2;
-    const innerEnd = start + wm[0].length - 2;
-    const attrs = { "data-folia-href": wm[1], "data-folia-wiki": "true", title: `Ctrl/Cmd + 点击跳转: ${wm[1]}` };
+    const innerEnd = end - 2;
+    const valid = isWikilinkValid ? isWikilinkValid(wm[1]) : true;
+    const cls = valid ? "cm-md-link cm-md-wikilink" : "cm-md-link cm-md-wikilink cm-md-link-broken";
+    const tip = valid
+      ? `Ctrl/Cmd + 点击跳转: ${wm[1]}`
+      : `目标笔记不存在（可能已删除或重命名）：${wm[1]}`;
+    const attrs: Record<string, string> = {
+      "data-folia-href": wm[1],
+      "data-folia-wiki": "true",
+      title: tip,
+    };
+    if (!valid) {
+      attrs["data-tip"] = tip;
+    }
+    emitWrapped(start, innerStart, innerEnd, end, Decoration.mark({ class: cls, attributes: attrs }));
+  }
 
+  // 4) Footnote definitions (`[^id]:`) and footnote references (`[^id]`)
+  const fnDefRe = /\[\^([^\]\s]+)\]:/g;
+  let fdm: RegExpExecArray | null;
+  while ((fdm = fnDefRe.exec(text)) !== null) {
+    const start = lineFrom + fdm.index;
+    const end = start + fdm[0].length;
+    if (isBlocked(start, end)) continue;
+    claimAtomic(start, end);
+    const idStart = start + 2;
+    const idEnd = start + 2 + fdm[1].length;
     if (hideMarkers) {
-      items.push({ from: start, to: innerStart, kind: "replace", deco: Decoration.replace({}) });
-      items.push({ from: innerStart, to: innerEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-link cm-md-wikilink", attributes: attrs }) });
-      items.push({ from: innerEnd, to: end, kind: "replace", deco: Decoration.replace({}) });
+      items.push({ from: start, to: idStart, kind: "replace", deco: Decoration.replace({}) });
+      items.push({
+        from: idStart,
+        to: idEnd,
+        kind: "mark",
+        deco: Decoration.mark({
+          class: "cm-md-footnote-def",
+          attributes: { "data-folia-footnote-def": fdm[1] },
+        }),
+      });
+      items.push({ from: idEnd, to: end, kind: "replace", deco: Decoration.replace({}) });
     } else {
-      items.push({ from: start, to: innerStart, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
-      items.push({ from: innerStart, to: innerEnd, kind: "mark", deco: Decoration.mark({ class: "cm-md-link cm-md-wikilink", attributes: attrs }) });
-      items.push({ from: innerEnd, to: end, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+      items.push({ from: start, to: end, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
     }
   }
 
-  // 4) Emoji shortcodes (:rocket:) outside code/math/links
+  const fnRefRe = /(?<!!)\[\^([^\]\s]+)\](?!:)/g;
+  let frm: RegExpExecArray | null;
+  while ((frm = fnRefRe.exec(text)) !== null) {
+    const start = lineFrom + frm.index;
+    const end = start + frm[0].length;
+    if (isBlocked(start, end)) continue;
+    claimAtomic(start, end);
+    const idStart = start + 2;
+    const idEnd = end - 1;
+    const attrs = {
+      "data-folia-footnote": frm[1],
+      title: `Ctrl/Cmd + 点击跳转到脚注 [^${frm[1]}]`,
+    };
+    emitWrapped(start, idStart, idEnd, end, Decoration.mark({ class: "cm-md-footnote-ref", attributes: attrs }));
+  }
+
+  // 5) Common Inline HTML tags: <u>, <ins>, <b>, <strong>, <i>, <em>, <s>, <del>, <mark>, <sub>, <sup>, <code>, <kbd>, <a href>, <span style>, <font color>
+  const htmlPairTags: Array<[RegExp, string, boolean]> = [
+    [/<(code)>([^\n]+?)<\/\1>/gi, "cm-md-inline-code", true],
+    [/<(kbd)>([^\n]+?)<\/\1>/gi, "cm-md-kbd", false],
+    [/<(u|ins)>([^\n]+?)<\/\1>/gi, "cm-md-underline", false],
+    [/<(b|strong)>([^\n]+?)<\/\1>/gi, "cm-md-bold", false],
+    [/<(i|em)>([^\n]+?)<\/\1>/gi, "cm-md-italic", false],
+    [/<(s|del)>([^\n]+?)<\/\1>/gi, "cm-md-strike", false],
+    [/<(mark)>([^\n]+?)<\/\1>/gi, "cm-md-highlight", false],
+    [/<(sub)>([^\n]+?)<\/\1>/gi, "cm-md-sub", false],
+    [/<(sup)>([^\n]+?)<\/\1>/gi, "cm-md-sup", false],
+  ];
+
+  for (const [tagRe, cls, isAtomicTag] of htmlPairTags) {
+    let hm: RegExpExecArray | null;
+    while ((hm = tagRe.exec(text)) !== null) {
+      const start = lineFrom + hm.index;
+      const end = start + hm[0].length;
+      const openEndOffset = hm[0].indexOf(">") + 1;
+      const closeStartOffset = hm[0].lastIndexOf("</");
+      if (openEndOffset <= 0 || closeStartOffset <= openEndOffset) continue;
+      const innerStart = start + openEndOffset;
+      const innerEnd = start + closeStartOffset;
+      if (isAtomicTag) {
+        if (isBlocked(start, end)) continue;
+        claimAtomic(start, end);
+      } else {
+        if (isBlocked(start, innerStart) || isBlocked(innerEnd, end)) continue;
+        claimAtomic(start, innerStart);
+        claimAtomic(innerEnd, end);
+      }
+      emitWrapped(start, innerStart, innerEnd, end, Decoration.mark({ class: cls }));
+    }
+  }
+
+  // Inline HTML <a href="...">text</a>
+  const htmlAnchorRe = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([^\n]+?)<\/a>/gi;
+  let am: RegExpExecArray | null;
+  while ((am = htmlAnchorRe.exec(text)) !== null) {
+    const start = lineFrom + am.index;
+    const end = start + am[0].length;
+    const openEndOffset = am[0].indexOf(">") + 1;
+    const closeStartOffset = am[0].lastIndexOf("</");
+    if (openEndOffset <= 0 || closeStartOffset <= openEndOffset) continue;
+    const innerStart = start + openEndOffset;
+    const innerEnd = start + closeStartOffset;
+    if (isBlocked(start, innerStart) || isBlocked(innerEnd, end)) continue;
+    claimAtomic(start, innerStart);
+    claimAtomic(innerEnd, end);
+    const attrs = { "data-folia-href": am[1], "data-folia-wiki": "false", title: `Ctrl/Cmd + 点击打开: ${am[1]}` };
+    emitWrapped(start, innerStart, innerEnd, end, Decoration.mark({ class: "cm-md-link", attributes: attrs }));
+  }
+
+  // Inline HTML <span style="color:...; background:...">text</span> or <font color="...">text</font>
+  const htmlColorRe = /<(span|font)\s+([^>]+)>([^\n]+?)<\/\1>/gi;
+  let hcm: RegExpExecArray | null;
+  while ((hcm = htmlColorRe.exec(text)) !== null) {
+    const start = lineFrom + hcm.index;
+    const end = start + hcm[0].length;
+    const attrStr = hcm[2];
+    const safeStyles: string[] = [];
+    const colorAttr = /\bcolor\s*=\s*["']?([#a-zA-Z0-9(),.\s%-]+?)["']?(?:\s|$)/i.exec(attrStr);
+    if (colorAttr) safeStyles.push(`color:${colorAttr[1].trim()}`);
+    const styleAttr = /\bstyle\s*=\s*["']([^"']+)["']/i.exec(attrStr);
+    if (styleAttr) {
+      for (const decl of styleAttr[1].split(";")) {
+        const [propRaw, valRaw] = decl.split(":");
+        if (!propRaw || !valRaw) continue;
+        const prop = propRaw.trim().toLowerCase();
+        const val = valRaw.trim();
+        if (
+          (prop === "color" || prop === "background" || prop === "background-color") &&
+          /^[#a-zA-Z0-9(),.\s%-]+$/.test(val)
+        ) {
+          safeStyles.push(`${prop}:${val}`);
+        }
+      }
+    }
+    if (safeStyles.length === 0) continue;
+    const openEndOffset = hcm[0].indexOf(">") + 1;
+    const closeStartOffset = hcm[0].lastIndexOf("</");
+    if (openEndOffset <= 0 || closeStartOffset <= openEndOffset) continue;
+    const innerStart = start + openEndOffset;
+    const innerEnd = start + closeStartOffset;
+    if (isBlocked(start, innerStart) || isBlocked(innerEnd, end)) continue;
+    claimAtomic(start, innerStart);
+    claimAtomic(innerEnd, end);
+    const styleStr = safeStyles.join(";");
+    emitWrapped(start, innerStart, innerEnd, end, Decoration.mark({ attributes: { style: styleStr } }));
+  }
+
+  // 6) Emoji shortcodes (:rocket:)
   if (hideMarkers) {
     const emojiRe = /:([a-z0-9_+-]+):/g;
     let em: RegExpExecArray | null;
@@ -800,8 +1660,8 @@ function decorateInlinePatterns(
       if (!ch) continue;
       const start = lineFrom + em.index;
       const end = start + em[0].length;
-      if (overlapsProtected(start, end)) continue;
-      claimSpan(start, end);
+      if (isBlocked(start, end)) continue;
+      claimAtomic(start, end);
       items.push({
         from: start,
         to: end,
@@ -811,37 +1671,149 @@ function decorateInlinePatterns(
     }
   }
 
-  // 5) Paired inline formatting (bold, strike, underline, highlight, italic, sub, sup)
-  const pushPair = (regex: RegExp, markerLen: number, contentClass: string) => {
-    let m: RegExpExecArray | null;
-    while ((m = regex.exec(text)) !== null) {
-      const start = lineFrom + m.index;
-      const end = start + m[0].length;
-      if (overlapsProtected(start, end)) continue;
-      const innerStart = start + markerLen;
-      const innerEnd = end - markerLen;
-      if (innerStart >= innerEnd) continue;
-      // Claim markers (or full span) so overlapping/duplicate pairs never collide
-      claimSpan(start, end);
-      if (hideMarkers) {
-        items.push({ from: start, to: innerStart, kind: "replace", deco: Decoration.replace({}) });
-        items.push({ from: innerStart, to: innerEnd, kind: "mark", deco: Decoration.mark({ class: contentClass }) });
-        items.push({ from: innerEnd, to: end, kind: "replace", deco: Decoration.replace({}) });
+  // 7) Paired inline formatting via delimiter scanner (supports arbitrary nesting around
+  //    inline code, links, math, emoji, HTML tags, and other emphasis markers!)
+  interface DelimPairOpts {
+    disallowInnerWhitespaceFlanking?: boolean;
+    disallowWordBoundary?: boolean;
+  }
+
+  const pushDelimPair = (delim: string, contentClass: string, opts: DelimPairOpts = {}) => {
+    const len = delim.length;
+    const ch = delim[0];
+    let openPos = -1;
+    let i = 0;
+
+    while (i <= text.length - len) {
+      if (text[i] === "\\") {
+        i += 2;
+        continue;
+      }
+      if (text[i] !== ch) {
+        i++;
+        continue;
+      }
+      if (isBlocked(lineFrom + i, lineFrom + i + 1)) {
+        i++;
+        continue;
+      }
+
+      // Measure contiguous unclaimed run of `ch`
+      let runEnd = i;
+      while (
+        runEnd < text.length &&
+        text[runEnd] === ch &&
+        !isBlocked(lineFrom + runEnd, lineFrom + runEnd + 1)
+      ) {
+        runEnd++;
+      }
+      const runLen = runEnd - i;
+      if (runLen < len) {
+        i = runEnd;
+        continue;
+      }
+
+      // Single-char delimiters (e.g. `*`, `~`, `_`) must not split an unclaimed longer run (`**`, `~~`, `__`)
+      if (len === 1 && runLen > 1) {
+        i = runEnd;
+        continue;
+      }
+
+      if (openPos === -1) {
+        const openEnd = i + len;
+        const prevCh = i > 0 ? text[i - 1] : "";
+        const nextCh = openEnd < text.length ? text[openEnd] : "";
+        const standaloneSpaces =
+          (!prevCh || /\s/.test(prevCh)) && (!nextCh || /\s/.test(nextCh));
+
+        if (
+          !nextCh ||
+          standaloneSpaces ||
+          (opts.disallowWordBoundary && /[A-Za-z0-9_]/.test(prevCh)) ||
+          (opts.disallowInnerWhitespaceFlanking && /\s/.test(nextCh))
+        ) {
+          i = runEnd;
+          continue;
+        }
+
+        openPos = i;
+        i = openEnd;
       } else {
-        items.push({ from: start, to: innerStart, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
-        items.push({ from: innerStart, to: innerEnd, kind: "mark", deco: Decoration.mark({ class: contentClass }) });
-        items.push({ from: innerEnd, to: end, kind: "mark", deco: Decoration.mark({ class: "cm-md-syntax" }) });
+        // When closing `**` on a `***` run (e.g. `**bold *italic***`), claim the rightmost 2 chars
+        // so the inner `*` remains free to close `*italic*`.
+        const closeStart = runLen === len + 1 ? runEnd - len : i;
+        const closeEnd = closeStart + len;
+        const openEnd = openPos + len;
+        const prevCh = closeStart > 0 ? text[closeStart - 1] : "";
+        const nextCh = closeEnd < text.length ? text[closeEnd] : "";
+        const standaloneSpaces =
+          (!prevCh || /\s/.test(prevCh)) && (!nextCh || /\s/.test(nextCh));
+
+        if (
+          closeStart <= openEnd ||
+          standaloneSpaces ||
+          (opts.disallowWordBoundary && /[A-Za-z0-9_]/.test(nextCh)) ||
+          (opts.disallowInnerWhitespaceFlanking && /\s/.test(prevCh)) ||
+          !text.slice(openEnd, closeStart).trim()
+        ) {
+          i = runEnd;
+          continue;
+        }
+
+        const absOpenStart = lineFrom + openPos;
+        const absOpenEnd = lineFrom + openEnd;
+        const absCloseStart = lineFrom + closeStart;
+        const absCloseEnd = lineFrom + closeEnd;
+        claimMarker(absOpenStart, absOpenEnd);
+        claimMarker(absCloseStart, absCloseEnd);
+        emitWrapped(
+          absOpenStart,
+          absOpenEnd,
+          absCloseStart,
+          absCloseEnd,
+          Decoration.mark({ class: contentClass })
+        );
+        openPos = -1;
+        i = closeEnd;
       }
     }
   };
 
-  pushPair(/\*\*([^*\n]+)\*\*/g, 2, "cm-md-bold");
-  pushPair(/~~([^~\n]+)~~/g, 2, "cm-md-strike");
-  pushPair(/\+\+([^+\n]+)\+\+/g, 2, "cm-md-underline");
-  pushPair(/==([^=\n]+)==/g, 2, "cm-md-highlight");
-  pushPair(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, 1, "cm-md-italic");
-  pushPair(/(?<!~)~([^~\s][^~\n]*?)~(?!~)/g, 1, "cm-md-sub");
-  pushPair(/\^([^^\s][^^\n]*?)\^/g, 1, "cm-md-sup");
+  pushDelimPair("***", "cm-md-bold cm-md-italic");
+  pushDelimPair("___", "cm-md-bold cm-md-italic", { disallowWordBoundary: true });
+  pushDelimPair("**", "cm-md-bold");
+  pushDelimPair("__", "cm-md-bold", { disallowWordBoundary: true });
+  pushDelimPair("~~", "cm-md-strike");
+  pushDelimPair("++", "cm-md-underline");
+  pushDelimPair("==", "cm-md-highlight");
+  pushDelimPair("*", "cm-md-italic", { disallowInnerWhitespaceFlanking: true });
+  pushDelimPair("_", "cm-md-italic", { disallowInnerWhitespaceFlanking: true, disallowWordBoundary: true });
+  pushDelimPair("~", "cm-md-sub", { disallowInnerWhitespaceFlanking: true });
+  pushDelimPair("^", "cm-md-sup", { disallowInnerWhitespaceFlanking: true });
+
+  // 8) Defined abbreviations (`*[HTML]: ...` / `[HTML]: ...`) with hover tooltip via GlobalTooltip
+  if (abbrMap && abbrMap.size > 0) {
+    const terms = Array.from(abbrMap.keys()).sort((a, b) => b.length - a.length);
+    const escapedTerms = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const abbrRe = new RegExp(`(?<![A-Za-z0-9_])(${escapedTerms.join("|")})(?![A-Za-z0-9_])`, "g");
+    let abm: RegExpExecArray | null;
+    while ((abm = abbrRe.exec(text)) !== null) {
+      const start = lineFrom + abm.index;
+      const end = start + abm[0].length;
+      if (isBlocked(start, end)) continue;
+      const desc = abbrMap.get(abm[1]);
+      if (!desc) continue;
+      items.push({
+        from: start,
+        to: end,
+        kind: "mark",
+        deco: Decoration.mark({
+          class: "cm-md-abbr",
+          attributes: { "data-tip": `${abm[1]}：${desc}` },
+        }),
+      });
+    }
+  }
 }
 
 function createBlockWidgetsField(cb: LivePreviewCallbacks) {
@@ -849,41 +1821,45 @@ function createBlockWidgetsField(cb: LivePreviewCallbacks) {
     if (!cb.isLiveMode() || cb.isLargeFile()) return Decoration.none;
     const doc = state.doc;
     const builder = new RangeSetBuilder<Decoration>();
+    const focused = state.field(editorFocusedField, false) ?? false;
     const selRanges = state.selection.ranges;
     const isSelIn = (from: number, to: number) =>
-      selRanges.some((r) => r.from <= to && r.to >= from);
+      focused && selRanges.some((r) => r.from <= to && r.to >= from);
 
     let ln = 1;
     while (ln <= doc.lines) {
       const line = doc.line(ln);
       const trimmed = line.text.trim();
 
-      if (/^```mermaid\s*$/i.test(trimmed)) {
+      // Fenced code blocks (Mermaid diagrams + Editorial Code Block Cards!)
+      const fenceMatch = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
+      if (fenceMatch) {
+        const fenceChar = fenceMatch[1][0];
+        const lang = fenceMatch[2].trim();
         let endLn = ln + 1;
-        while (endLn <= doc.lines && !/^```\s*$/.test(doc.line(endLn).text.trim())) endLn++;
+        while (endLn <= doc.lines) {
+          const t = doc.line(endLn).text.trim();
+          if (t.startsWith(fenceChar.repeat(3)) && t.replace(new RegExp(`\\${fenceChar}`, "g"), "").trim() === "") {
+            break;
+          }
+          endLn++;
+        }
         if (endLn <= doc.lines) {
           const blockFrom = line.from;
           const blockTo = doc.line(endLn).to;
           if (!isSelIn(blockFrom, blockTo)) {
-            const code = state.sliceDoc(line.to + 1, doc.line(endLn).from).trim();
-            builder.add(blockFrom, blockTo, Decoration.replace({ widget: new MermaidWidget(code), block: true }));
+            const innerStart = Math.min(line.to + 1, doc.line(endLn).from);
+            const innerEnd = Math.max(innerStart, doc.line(endLn).from - 1);
+            const code = innerStart <= doc.line(endLn).from ? state.sliceDoc(innerStart, innerEnd) : "";
+            if (/^mermaid$/i.test(lang)) {
+              builder.add(blockFrom, blockTo, Decoration.replace({ widget: new MermaidWidget(code.trim()), block: true }));
+            } else {
+              builder.add(blockFrom, blockTo, Decoration.replace({ widget: new CodeBlockWidget(code, lang), block: true }));
+            }
           }
           ln = endLn + 1;
           continue;
         }
-      }
-
-      // Skip non-mermaid fenced code blocks so tables/$$ inside code blocks are never replaced
-      if (/^(`{3,}|~{3,})/.test(trimmed)) {
-        const fenceChar = trimmed[0];
-        let endLn = ln + 1;
-        while (endLn <= doc.lines) {
-          const t = doc.line(endLn).text.trim();
-          if (t.startsWith(fenceChar.repeat(3))) break;
-          endLn++;
-        }
-        ln = endLn + 1;
-        continue;
       }
 
       if (trimmed === "$$") {
@@ -929,7 +1905,8 @@ function createBlockWidgetsField(cb: LivePreviewCallbacks) {
       return compute(state);
     },
     update(deco, tr) {
-      if (tr.docChanged || tr.selection || tr.reconfigured) {
+      const focusChanged = tr.effects.some((e) => e.is(editorFocusEffect));
+      if (tr.docChanged || tr.selection || tr.reconfigured || focusChanged) {
         return compute(tr.state);
       }
       return deco;
@@ -957,8 +1934,6 @@ export function createMarkdownLivePreviewExtension(cb: LivePreviewCallbacks): Ex
         this.onWindowMouseUpBound = () => {
           if (!this.pointerSelecting) return;
           this.pointerSelecting = false;
-          // Refresh after pointer release: collapsed click reveals syntax for editing,
-          // while non-empty drag/double-click selection keeps heading/text stable for copying!
           requestAnimationFrame(() => {
             if (this.view.dom.isConnected) {
               this.view.dispatch({ effects: refreshLivePreviewEffect.of(null) });
@@ -975,7 +1950,6 @@ export function createMarkdownLivePreviewExtension(cb: LivePreviewCallbacks): Ex
           tr.effects.some((e) => e.is(refreshLivePreviewEffect))
         );
 
-        // During mouse drag-selection, avoid expanding `# ` / `**` markers mid-drag so text never jumps under the cursor
         if (
           this.pointerSelecting &&
           !update.docChanged &&
@@ -990,9 +1964,9 @@ export function createMarkdownLivePreviewExtension(cb: LivePreviewCallbacks): Ex
           update.docChanged ||
           update.viewportChanged ||
           update.selectionSet ||
+          update.focusChanged ||
           update.geometryChanged
         ) {
-          // When selection is non-empty after a mouse drag/double-click, keep syntax hidden so copied text & highlights stay clean
           const hasNonEmptySelection = update.state.selection.ranges.some((r) => !r.empty);
           const expandOnlyWhenCollapsed = hasNonEmptySelection && !update.docChanged;
           this.decorations = buildLineAndInlineDecorations(
@@ -1015,6 +1989,15 @@ export function createMarkdownLivePreviewExtension(cb: LivePreviewCallbacks): Ex
     mousedown(event) {
       if (!(event.ctrlKey || event.metaKey)) return false;
       const target = event.target as HTMLElement | null;
+
+      const fnEl = target?.closest("[data-folia-footnote]") as HTMLElement | null;
+      if (fnEl) {
+        event.preventDefault();
+        const fnId = fnEl.dataset.foliaFootnote || "";
+        if (fnId) cb.onNavigateFootnote?.(fnId);
+        return true;
+      }
+
       const linkEl = target?.closest("[data-folia-href]") as HTMLElement | null;
       if (!linkEl) return false;
       event.preventDefault();
@@ -1025,5 +2008,9 @@ export function createMarkdownLivePreviewExtension(cb: LivePreviewCallbacks): Ex
     },
   });
 
-  return [inlinePlugin, createBlockWidgetsField(cb), linkClickHandler];
+  const focusTracker = EditorView.focusChangeEffect.of((_state, focusing) =>
+    editorFocusEffect.of(focusing)
+  );
+
+  return [editorFocusedField, focusTracker, inlinePlugin, createBlockWidgetsField(cb), linkClickHandler];
 }

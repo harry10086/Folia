@@ -6,6 +6,7 @@ import EditorPaneView from "@/components/EditorPaneView.vue";
 import SettingsModal from "@/components/SettingsModal.vue";
 import QuickOpenModal from "@/components/QuickOpenModal.vue";
 import DiffModal from "@/components/DiffModal.vue";
+import HistoryModal from "@/components/HistoryModal.vue";
 import GlobalTooltip from "@/components/GlobalTooltip.vue";
 import { tabDragState } from "@/core/ui/tabDrag";
 import { ipc, isTauriRuntime, parseIpcError } from "@/core/ipc/client";
@@ -14,8 +15,8 @@ import { MouseGestureController } from "@/core/gestures/mouseGestures";
 import { buildStandaloneHtmlDocument, printMarkdownToPdf } from "@/core/export/exporter";
 import { checkGithubUpdate } from "@/core/update/updater";
 import { useSettingsStore, registerConfigPersistHook } from "@/stores/settings";
-import { useWorkspaceStore } from "@/stores/workspace";
-import { useTabsStore } from "@/stores/tabs";
+import { useWorkspaceStore, isValidSortOrder, type SortOrder } from "@/stores/workspace";
+import { useTabsStore, type SavedWorkspaceLayout } from "@/stores/tabs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 const settings = useSettingsStore();
@@ -42,21 +43,55 @@ let resizeStartA = 50;
 let resizeStartB = 50;
 let resizeContainerTotal = 1;
 
+let isHydrating = false;
+let configPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePersistConfig() {
+  if (isHydrating) return;
+  if (configPersistTimer) clearTimeout(configPersistTimer);
+  configPersistTimer = setTimeout(() => {
+    void persistFullConfig();
+  }, 300);
+}
+
 function resetPaneSizes() {
   const n = Math.max(1, tabsStore.panes.length);
   paneSizes.value = Array.from({ length: n }, () => 100 / n);
 }
 
 watch(
-  () => wsStore.workspaces.map((w) => `${w.id}:${w.collapsed}`).join("|"),
+  () => [
+    wsStore.workspaces
+      .map((w) => `${w.id}:${w.name}:${w.rootPath}:${w.collapsed}:${w.sortOrder ?? ""}`)
+      .join("|"),
+    wsStore.sortOrder,
+    JSON.stringify(wsStore.folderSortOrders),
+    JSON.stringify(wsStore.manualOrders),
+    tabsStore.splitDirection,
+    tabsStore.activePaneId,
+    paneSizes.value.map((n) => Math.round(n * 10)).join(","),
+    tabsStore.panes
+      .map(
+        (p) =>
+          `${p.id}:${p.activeTabId ?? ""}:${p.tabs
+            .filter((t) => t.kind !== "terminal")
+            .map((t) => `${t.path}@${t.pinned ? 1 : 0}@${t.editMode}`)
+            .join(",")}`
+      )
+      .join("||"),
+  ],
   () => {
-    void persistFullConfig();
+    schedulePersistConfig();
   }
 );
 
 watch(
   () => [tabsStore.panes.length, tabsStore.splitDirection],
-  () => resetPaneSizes(),
+  () => {
+    if (paneSizes.value.length !== Math.max(1, tabsStore.panes.length)) {
+      resetPaneSizes();
+    }
+  },
   { immediate: true }
 );
 
@@ -171,8 +206,39 @@ function setPaneRef(id: string, el: unknown) {
 }
 
 async function persistFullConfig() {
-  if (!isTauriRuntime()) return;
+  if (!isTauriRuntime() || isHydrating) return;
   try {
+    const serializablePanes = tabsStore.panes
+      .map((pane) => {
+        const tabs = pane.tabs
+          .filter((t) => t.kind !== "terminal")
+          .map((t) => ({
+            path: t.path,
+            workspaceId: t.workspaceId,
+            pinned: t.pinned,
+            editMode: t.editMode,
+          }));
+        const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId && t.kind !== "terminal");
+        return {
+          activePath: activeTab?.path ?? tabs[tabs.length - 1]?.path ?? null,
+          tabs,
+        };
+      })
+      .filter((p) => p.tabs.length > 0);
+
+    const activePaneIdx = Math.max(
+      0,
+      tabsStore.panes.findIndex((p) => p.id === tabsStore.activePaneId)
+    );
+
+    const workspaceLayout: SavedWorkspaceLayout = {
+      splitDirection: serializablePanes.length > 1 ? tabsStore.splitDirection : "none",
+      activePaneIndex: Math.min(activePaneIdx, Math.max(0, serializablePanes.length - 1)),
+      paneSizes:
+        serializablePanes.length === paneSizes.value.length ? [...paneSizes.value] : undefined,
+      panes: serializablePanes,
+    };
+
     await ipc.saveAppConfig({
       settings: {
         ...settings.state,
@@ -189,15 +255,16 @@ async function persistFullConfig() {
         name: w.name,
         rootPath: w.rootPath,
         collapsed: w.collapsed,
+        ...(w.sortOrder ? { sortOrder: w.sortOrder } : {}),
       })),
+      sortOrder: wsStore.sortOrder,
+      folderSortOrders: { ...wsStore.folderSortOrders },
+      manualOrders: Object.fromEntries(
+        Object.entries(wsStore.manualOrders).map(([k, v]) => [k, [...v]])
+      ),
       recentFiles: tabsStore.recentFiles,
-      openPaths: tabsStore.panes[0]?.tabs
-        .filter((t) => t.kind !== "terminal")
-        .map((t) => ({
-          path: t.path,
-          workspaceId: t.workspaceId,
-          pinned: t.pinned,
-        })) ?? [],
+      workspaceLayout,
+      openPaths: serializablePanes[0]?.tabs ?? [],
     });
   } catch (err) {
     console.warn("Config save skipped:", err);
@@ -206,26 +273,58 @@ async function persistFullConfig() {
 
 async function hydrateApp() {
   if (!isTauriRuntime()) return;
+  isHydrating = true;
   try {
     const saved = await ipc.loadAppConfig();
     if (saved) {
       if (saved.settings && typeof saved.settings === "object") {
         settings.hydrate(saved.settings as Record<string, unknown>);
       }
+      if (isValidSortOrder(saved.sortOrder)) {
+        wsStore.sortOrder = saved.sortOrder as SortOrder;
+      }
+      wsStore.hydrateSortPreferences(
+        saved.folderSortOrders as Record<string, unknown> | undefined,
+        saved.manualOrders as Record<string, unknown> | undefined
+      );
       if (Array.isArray(saved.recentFiles)) {
         tabsStore.recentFiles = saved.recentFiles as typeof tabsStore.recentFiles;
       }
       if (Array.isArray(saved.workspaces) && saved.workspaces.length > 0) {
         await wsStore.hydrateWorkspaces(
-          saved.workspaces as Array<{ id: string; name: string; rootPath: string; collapsed?: boolean }>
+          saved.workspaces as Array<{
+            id: string;
+            name: string;
+            rootPath: string;
+            collapsed?: boolean;
+            sortOrder?: unknown;
+          }>
         );
       }
-      if (Array.isArray(saved.openPaths)) {
-        for (const entry of saved.openPaths as Array<{ path: string; workspaceId?: string; pinned?: boolean }>) {
+      const savedLayout = saved.workspaceLayout as SavedWorkspaceLayout | undefined;
+      if (savedLayout && Array.isArray(savedLayout.panes) && savedLayout.panes.length > 0) {
+        await tabsStore.restoreLayout(savedLayout);
+        if (
+          Array.isArray(savedLayout.paneSizes) &&
+          savedLayout.paneSizes.length === tabsStore.panes.length
+        ) {
+          paneSizes.value = [...savedLayout.paneSizes];
+        } else {
+          resetPaneSizes();
+        }
+      } else if (Array.isArray(saved.openPaths)) {
+        for (const entry of saved.openPaths as Array<{
+          path: string;
+          workspaceId?: string;
+          pinned?: boolean;
+          editMode?: "live" | "source";
+        }>) {
           if (entry?.path) {
             await tabsStore.openFile(entry.path, {
               workspaceId: entry.workspaceId,
               pinned: Boolean(entry.pinned),
+              editMode: entry.editMode,
+              silent: true,
             });
           }
         }
@@ -234,6 +333,8 @@ async function hydrateApp() {
     await tabsStore.checkRecoveryDrafts();
   } catch (err) {
     console.error("Failed to hydrate config:", err);
+  } finally {
+    isHydrating = false;
   }
 }
 
@@ -300,7 +401,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     e.preventDefault();
     switch (s.id) {
       case "save":
-        if (tabsStore.activeTab) void tabsStore.saveTab(tabsStore.activeTab.id, false);
+        if (tabsStore.activeTab) void tabsStore.saveTab(tabsStore.activeTab.id, false, true);
         break;
       case "newNote":
         void handleQuickNewNote();
@@ -409,10 +510,20 @@ onMounted(async () => {
   gestureCtrl.mount();
 
   if (isTauriRuntime()) {
+    const pendingTreePaths = new Set<string>();
     unlistenExternal = await ipc.onExternalFileChanged((ev) => void tabsStore.handleExternalFileEvent(ev));
-    unlistenTree = await ipc.onTreeChanged(() => {
+    unlistenTree = await ipc.onTreeChanged((ev) => {
+      for (const p of ev.paths ?? []) pendingTreePaths.add(p);
       if (treeRefreshTimer) clearTimeout(treeRefreshTimer);
-      treeRefreshTimer = setTimeout(() => void wsStore.refreshAll(), 350);
+      treeRefreshTimer = setTimeout(() => {
+        const batch = Array.from(pendingTreePaths);
+        pendingTreePaths.clear();
+        if (batch.length > 0) {
+          void wsStore.refreshWorkspacesForPaths(batch);
+        } else {
+          void wsStore.refreshAll();
+        }
+      }, 350);
     });
   }
 
@@ -537,6 +648,7 @@ onBeforeUnmount(() => {
     <SettingsModal :open="settingsOpen" @close="settingsOpen = false; persistFullConfig()" />
     <QuickOpenModal :open="quickOpenVisible" @close="quickOpenVisible = false" />
     <DiffModal />
+    <HistoryModal />
     <GlobalTooltip />
 
     <Teleport to="body">

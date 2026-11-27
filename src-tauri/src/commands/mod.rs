@@ -5,6 +5,7 @@ use crate::fs::{
     self, canonicalize_clean, compute_disk_hash, compute_relative_posix, normalize_lexical,
     path_to_string, AttachmentItem, FileDocument, FileNode, SaveFileResult,
 };
+use crate::history::{self, HistoryEntryMeta, HistoryStats};
 use crate::search::{SearchManager, SearchRequest, SearchResponse};
 use crate::terminal::{detect_available_shells, DetectedShellInfo, SpawnTerminalResult, TerminalManager};
 use crate::watcher::WatcherService;
@@ -13,8 +14,15 @@ use parking_lot::RwLock;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
+
+#[derive(Debug, Clone, Default)]
+pub struct TrayBehavior {
+    pub minimize_to_tray: bool,
+    pub close_to_tray: bool,
+}
 
 pub struct AppRuntimeState {
     pub workspace_roots: Arc<RwLock<Vec<PathBuf>>>,
@@ -22,6 +30,8 @@ pub struct AppRuntimeState {
     pub search: SearchManager,
     pub terminal: TerminalManager,
     pub app_data_dir: PathBuf,
+    pub tray_behavior: Arc<RwLock<TrayBehavior>>,
+    pub was_maximized: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -281,7 +291,10 @@ pub async fn search_files_content(
     state: State<'_, AppRuntimeState>,
     req: SearchRequest,
 ) -> Result<SearchResponse, FoliaError> {
-    state.search.search(req)
+    let mgr = state.search.clone();
+    tokio::task::spawn_blocking(move || mgr.search(req))
+        .await
+        .map_err(|e| FoliaError::Search(format!("搜索线程异常: {e}")))?
 }
 
 #[tauri::command]
@@ -408,4 +421,103 @@ pub fn terminal_kill(state: State<'_, AppRuntimeState>, id: String) {
 #[tauri::command]
 pub fn terminal_list_shells() -> Vec<DetectedShellInfo> {
     detect_available_shells()
+}
+
+#[tauri::command]
+pub fn set_tray_behavior(
+    state: State<'_, AppRuntimeState>,
+    minimize_to_tray: bool,
+    close_to_tray: bool,
+) {
+    let mut guard = state.tray_behavior.write();
+    guard.minimize_to_tray = minimize_to_tray;
+    guard.close_to_tray = close_to_tray;
+}
+
+#[tauri::command]
+pub fn hide_to_tray(app: AppHandle, state: State<'_, AppRuntimeState>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let is_max = window.is_maximized().unwrap_or(false);
+        state.was_maximized.store(is_max, Ordering::SeqCst);
+        config::save_window_state(&state.app_data_dir, &config::WindowState { maximized: is_max });
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle, state: State<'_, AppRuntimeState>) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false) {
+            let is_max = window.is_maximized().unwrap_or(false);
+            state.was_maximized.store(is_max, Ordering::SeqCst);
+        }
+    }
+    config::save_window_state(
+        &state.app_data_dir,
+        &config::WindowState {
+            maximized: state.was_maximized.load(Ordering::SeqCst),
+        },
+    );
+    if let Some(tray) = app.remove_tray_by_id("folia-tray") {
+        drop(tray);
+    }
+    app.exit(0);
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn history_save_snapshot(
+    state: State<'_, AppRuntimeState>,
+    path: String,
+    content: String,
+    reason: String,
+    min_interval_secs: u64,
+    max_snapshots: usize,
+    force: bool,
+) -> Result<Option<HistoryEntryMeta>, FoliaError> {
+    history::save_snapshot(
+        &state.app_data_dir,
+        &path,
+        &content,
+        &reason,
+        min_interval_secs,
+        max_snapshots,
+        force,
+    )
+}
+
+#[tauri::command]
+pub fn history_list(
+    state: State<'_, AppRuntimeState>,
+    path: String,
+) -> Result<Vec<HistoryEntryMeta>, FoliaError> {
+    history::list_snapshots(&state.app_data_dir, &path)
+}
+
+#[tauri::command]
+pub fn history_read(
+    state: State<'_, AppRuntimeState>,
+    path: String,
+    id: String,
+) -> Result<String, FoliaError> {
+    history::read_snapshot(&state.app_data_dir, &path, &id)
+}
+
+#[tauri::command]
+pub fn history_delete_entry(
+    state: State<'_, AppRuntimeState>,
+    path: String,
+    id: String,
+) -> Result<(), FoliaError> {
+    history::delete_snapshot(&state.app_data_dir, &path, &id)
+}
+
+#[tauri::command]
+pub fn history_stats(state: State<'_, AppRuntimeState>) -> HistoryStats {
+    history::get_history_stats(&state.app_data_dir)
+}
+
+#[tauri::command]
+pub fn history_clear_all(state: State<'_, AppRuntimeState>) -> Result<usize, FoliaError> {
+    history::clear_all_history(&state.app_data_dir)
 }
