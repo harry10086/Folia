@@ -1,5 +1,6 @@
 # Folia
 > **Folia** 是什么？和 Obsidian 一样：**文件系统就是数据库，Markdown 就是数据格式。**
+
 **Folia** 是一个基于 Tauri 2 + Vue 3 + CodeMirror 6 的 Markdown 笔记管理器。本地文件夹优先、零隐藏数据库、跨平台、极轻量的 Obsidian 替代。
 
 **Folia 没有：**
