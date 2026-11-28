@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import type { HeadingItem } from "@/core/markdown/outline";
 import { List } from "lucide-vue-next";
+import { useI18n } from "@/core/i18n";
+
+const { t } = useI18n();
 
 defineProps<{
   headings: HeadingItem[];
@@ -21,10 +24,10 @@ function isCurrentHeading(headings: HeadingItem[], idx: number, activeLine: numb
 <template>
   <aside class="outline-panel">
     <div class="outline-header">
-      <List :size="14" /><span>目录大纲</span>
+      <List :size="14" /><span>{{ t("outline.title") }}</span>
     </div>
     <div class="outline-body">
-      <div v-if="headings.length === 0" class="outline-empty">当前文档暂无标题</div>
+      <div v-if="headings.length === 0" class="outline-empty">{{ t("outline.empty") }}</div>
       <button
         v-for="(h, idx) in headings"
         :key="`${h.line}-${h.text}`"

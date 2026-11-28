@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RotateCcw, X } from "lucide-vue-next";
 import Sidebar from "@/components/Sidebar.vue";
 import EditorPaneView from "@/components/EditorPaneView.vue";
@@ -17,7 +17,11 @@ import { checkGithubUpdate } from "@/core/update/updater";
 import { useSettingsStore, registerConfigPersistHook } from "@/stores/settings";
 import { useWorkspaceStore, isValidSortOrder, type SortOrder } from "@/stores/workspace";
 import { useTabsStore, type SavedWorkspaceLayout } from "@/stores/tabs";
+import { destroyAllTerminalInstances } from "@/core/terminal/terminalRegistry";
+import { useI18n } from "@/core/i18n";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+
+const { t } = useI18n();
 
 const settings = useSettingsStore();
 const wsStore = useWorkspaceStore();
@@ -341,7 +345,7 @@ async function hydrateApp() {
 async function handleExportHtml(tabId?: string) {
   const tab = tabId ? tabsStore.allOpenTabs.find((t) => t.id === tabId) : tabsStore.activeTab;
   if (!tab || tab.kind !== "markdown") {
-    tabsStore.showToast("请先打开一个 Markdown 文档");
+    tabsStore.showToast(t("app.needMarkdownDoc"));
     return;
   }
   const defaultName = tab.name.replace(/\.[^.]+$/, "") + ".html";
@@ -355,22 +359,22 @@ async function handleExportHtml(tabId?: string) {
       true
     );
     await ipc.exportHtmlFile(target, html);
-    tabsStore.showToast(`已导出 HTML: ${target}`);
+    tabsStore.showToast(t("app.exportedHtml", { path: target }));
   } catch (err) {
-    tabsStore.showToast(`导出 HTML 失败: ${parseIpcError(err).message}`, 3500);
+    tabsStore.showToast(t("app.exportHtmlFailed", { msg: parseIpcError(err).message }), 3500);
   }
 }
 
 async function handleExportPdf(tabId?: string) {
   const tab = tabId ? tabsStore.allOpenTabs.find((t) => t.id === tabId) : tabsStore.activeTab;
   if (!tab || tab.kind !== "markdown") {
-    tabsStore.showToast("请先打开一个 Markdown 文档");
+    tabsStore.showToast(t("app.needMarkdownDoc"));
     return;
   }
   try {
     await printMarkdownToPdf(tab.name.replace(/\.[^.]+$/, ""), tab.content, tab.path);
   } catch (err) {
-    tabsStore.showToast(`打印 / 导出 PDF 失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("app.exportPdfFailed", { msg: parseIpcError(err).message }));
   }
 }
 
@@ -381,13 +385,14 @@ async function handleQuickNewNote() {
     return;
   }
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
-  const name = `未命名笔记-${stamp}.md`;
+  const baseTitle = t("app.untitledNote");
+  const name = `${baseTitle}-${stamp}.md`;
   try {
-    const created = await ipc.createFile(firstWs.rootPath, name, `# 未命名笔记\n\n`);
+    const created = await ipc.createFile(firstWs.rootPath, name, `# ${baseTitle}\n\n`);
     await wsStore.refreshWorkspace(firstWs.id);
     await tabsStore.openFile(created, { workspaceId: firstWs.id });
   } catch (err) {
-    tabsStore.showToast(`新建笔记失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("app.newNoteFailed", { msg: parseIpcError(err).message }));
   }
 }
 
@@ -528,12 +533,25 @@ onMounted(async () => {
   }
 
   await hydrateApp();
+  await nextTick();
+  if (isTauriRuntime()) {
+    // Use a fast timer fallback alongside rAF because hidden Windows WebView2
+    // windows may throttle requestAnimationFrame before first show().
+    let shown = false;
+    const revealWindow = () => {
+      if (shown) return;
+      shown = true;
+      void ipc.showMainWindow().catch(() => {});
+    };
+    requestAnimationFrame(() => requestAnimationFrame(revealWindow));
+    setTimeout(revealWindow, 50);
+  }
 
   if (settings.state.autoCheckUpdates) {
     void checkGithubUpdate().then((res) => {
       if (res.status === "update-available" && res.latestVersion) {
         tabsStore.showToast(
-          `发现新版本 ${res.latestVersion}，可在「设置 → 关于与更新」查看下载`,
+          t("app.updateAvailableToast", { version: res.latestVersion }),
           5000
         );
       }
@@ -546,6 +564,7 @@ onBeforeUnmount(() => {
   gestureCtrl?.unmount();
   unlistenExternal?.();
   unlistenTree?.();
+  destroyAllTerminalInstances();
   void persistFullConfig();
 });
 </script>
@@ -556,12 +575,12 @@ onBeforeUnmount(() => {
     <div v-if="tabsStore.recoveryDrafts.length > 0" class="recovery-bar">
       <div class="recovery-info">
         <RotateCcw :size="14" />
-        <span>检测到 {{ tabsStore.recoveryDrafts.length }} 份上次未正常保存的恢复草稿：</span>
+        <span>{{ t("app.recoveryBanner", { count: tabsStore.recoveryDrafts.length }) }}</span>
         <strong>{{ tabsStore.recoveryDrafts[0].path.split(/[\\/]/).pop() }}</strong>
       </div>
       <div class="recovery-actions">
-        <button class="rec-btn primary" @click="tabsStore.restoreRecoveryDraft(tabsStore.recoveryDrafts[0])">恢复草稿</button>
-        <button class="rec-btn" @click="tabsStore.discardRecoveryDraft(tabsStore.recoveryDrafts[0])">丢弃</button>
+        <button class="rec-btn primary" @click="tabsStore.restoreRecoveryDraft(tabsStore.recoveryDrafts[0])">{{ t("app.restoreDraft") }}</button>
+        <button class="rec-btn" @click="tabsStore.discardRecoveryDraft(tabsStore.recoveryDrafts[0])">{{ t("app.discardDraft") }}</button>
       </div>
     </div>
 
@@ -637,7 +656,7 @@ onBeforeUnmount(() => {
             v-if="idx < tabsStore.panes.length - 1"
             class="pane-resizer"
             :class="tabsStore.splitDirection === 'horizontal' ? 'is-horizontal' : 'is-vertical'"
-            data-tip="拖动调整分栏宽度（双击恢复均分）"
+            :data-tip="t('app.paneResizeTip')"
             @mousedown="startPaneResize(idx, $event)"
             @dblclick="resetPaneSizes"
           />
@@ -752,13 +771,26 @@ onBeforeUnmount(() => {
   pointer-events: auto;
 }
 .resizer-v {
-  width: 4px;
+  width: 6px;
+  margin-left: -3px;
+  margin-right: -3px;
+  position: relative;
+  z-index: 20;
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
+}
+.resizer-v::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
   transition: background 0.14s;
 }
-.resizer-v:hover {
+.resizer-v:hover::after {
   background: var(--accent);
 }
 

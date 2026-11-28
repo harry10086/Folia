@@ -33,12 +33,15 @@ import {
   eventToCombo,
   formatComboForPlatform,
   getEffectiveShortcuts,
+  getShortcutLabel,
 } from "@/core/shortcuts/keymap";
 import {
   GESTURE_ACTION_OPTIONS,
   formatGestureSequence,
+  getGestureActionLabel,
   type GestureActionId,
 } from "@/core/gestures/mouseGestures";
+import { LOCALE_OPTIONS, useI18n, type MessageKey } from "@/core/i18n";
 import {
   APP_AUTHOR,
   APP_AUTHOR_URL,
@@ -55,6 +58,7 @@ const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const settings = useSettingsStore();
+const { t } = useI18n();
 const activeTab = ref<"theme" | "editor" | "shortcuts" | "terminal" | "about">("theme");
 const detectedShells = ref<DetectedShellInfo[]>([]);
 const historyCacheStats = ref<HistoryStats>({ totalSnapshots: 0, totalBytes: 0 });
@@ -74,12 +78,12 @@ async function handleClearAllHistory() {
   try {
     const count = await ipc.historyClearAll();
     await refreshHistoryStats();
-    historyClearFeedback.value = count > 0 ? `已清空 ${count} 份历史快照` : "当前没有历史缓存";
+    historyClearFeedback.value = count > 0 ? t("settings.historyCleared", { count }) : t("settings.historyNone");
     setTimeout(() => {
       historyClearFeedback.value = null;
     }, 2500);
   } catch {
-    historyClearFeedback.value = "清空历史缓存失败";
+    historyClearFeedback.value = t("settings.historyClearFailed");
   }
 }
 
@@ -197,7 +201,7 @@ function selectTheme(id: string, mode: "light" | "dark") {
 function startNewCustomTheme() {
   themeEditorMode.value = "yaml";
   syncYamlFromEffective(true);
-  flashYamlFeedback("已基于当前配色生成新模板，编辑后点击「保存为新主题」即可");
+  flashYamlFeedback(t("settings.yamlMsgTemplate"));
 }
 
 function handleSaveYamlAsNew() {
@@ -210,7 +214,7 @@ function handleSaveYamlAsNew() {
   settings.saveCustomTheme(parsed.theme);
   editingCustomThemeId.value = parsed.theme.id;
   yamlDraft.value = serializeThemeToYaml(parsed.theme);
-  flashYamlFeedback(`已新增并应用主题「${parsed.theme.name}」`);
+  flashYamlFeedback(t("settings.yamlMsgAdded", { name: parsed.theme.name }));
 }
 
 function handleUpdateEditingCustomTheme() {
@@ -223,7 +227,7 @@ function handleUpdateEditingCustomTheme() {
   yamlError.value = null;
   settings.saveCustomTheme(parsed.theme);
   yamlDraft.value = serializeThemeToYaml(parsed.theme);
-  flashYamlFeedback(`已更新主题「${parsed.theme.name}」`);
+  flashYamlFeedback(t("settings.yamlMsgUpdated", { name: parsed.theme.name }));
 }
 
 function handleSaveVisualAsNewTheme() {
@@ -233,13 +237,13 @@ function handleSaveVisualAsNewTheme() {
   const newTheme: ThemePalette = {
     ...cur,
     id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    name: `${baseName} 自定义 ${count}`,
+    name: `${baseName} ${t("common.custom")} ${count}`,
     swatches: [cur.bold, cur.accent, cur.heading, cur.textPrimary, cur.bgSidebar],
   };
   settings.saveCustomTheme(newTheme);
   editingCustomThemeId.value = newTheme.id;
   yamlDraft.value = serializeThemeToYaml(newTheme);
-  flashYamlFeedback(`已保存为新主题「${newTheme.name}」`);
+  flashYamlFeedback(t("settings.yamlMsgSaved", { name: newTheme.name }));
 }
 
 async function handleCopyYaml() {
@@ -248,9 +252,9 @@ async function handleCopyYaml() {
     : serializeThemeToYaml(effectivePalette.value);
   try {
     await navigator.clipboard.writeText(text);
-    flashYamlFeedback("已复制 YAML 配色代码到剪贴板");
+    flashYamlFeedback(t("settings.yamlMsgCopied"));
   } catch {
-    yamlError.value = "剪贴板写入失败，请手动全选文本框复制";
+    yamlError.value = t("settings.yamlMsgCopyErr");
   }
 }
 
@@ -258,7 +262,7 @@ async function handlePasteYaml() {
   try {
     const text = await navigator.clipboard.readText();
     if (!text.trim()) {
-      yamlError.value = "剪贴板为空";
+      yamlError.value = t("settings.yamlMsgEmptyClip");
       return;
     }
     themeEditorMode.value = "yaml";
@@ -268,11 +272,11 @@ async function handlePasteYaml() {
       yamlError.value = parsed.error;
     } else {
       yamlError.value = null;
-      flashYamlFeedback(`已粘贴「${parsed.theme.name}」，点击「保存为新主题」生效`);
+      flashYamlFeedback(t("settings.yamlMsgPasted", { name: parsed.theme.name }));
     }
   } catch {
     themeEditorMode.value = "yaml";
-    yamlError.value = "无法自动读取剪贴板，请直接在下方代码框按 Ctrl+V 粘贴";
+    yamlError.value = t("settings.yamlMsgPasteErr");
   }
 }
 
@@ -298,9 +302,9 @@ async function handleImportYamlFile(e: Event) {
     settings.saveCustomTheme(parsed.theme);
     editingCustomThemeId.value = parsed.theme.id;
     yamlDraft.value = serializeThemeToYaml(parsed.theme);
-    flashYamlFeedback(`已导入并应用主题「${parsed.theme.name}」`);
+    flashYamlFeedback(t("settings.yamlMsgImported", { name: parsed.theme.name }));
   } catch {
-    yamlError.value = "读取 YAML 文件失败";
+    yamlError.value = t("settings.yamlMsgImportErr");
   }
 }
 
@@ -317,7 +321,7 @@ function handleExportYamlFile() {
   a.download = `${safeName}.yaml`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  flashYamlFeedback(`已导出 ${safeName}.yaml`);
+  flashYamlFeedback(t("settings.yamlMsgExported", { name: safeName }));
 }
 
 function handleDeleteCustomTheme(id: string) {
@@ -464,101 +468,116 @@ onBeforeUnmount(() => {
     <div v-if="open" class="settings-backdrop" @click="stopRecordingShortcut(); emit('close')">
       <div class="settings-modal" @click.stop>
         <div class="settings-sidebar">
-          <div class="settings-brand">设置中心</div>
+          <div class="settings-brand">{{ t("settings.brand") }}</div>
           <button class="s-nav-item" :class="{ active: activeTab === 'theme' }" @click="activeTab = 'theme'">
-            界面主题与字体
+            {{ t("settings.navTheme") }}
           </button>
           <button class="s-nav-item" :class="{ active: activeTab === 'editor' }" @click="activeTab = 'editor'">
-            常规、编辑器与附件
+            {{ t("settings.navEditor") }}
           </button>
           <button class="s-nav-item" :class="{ active: activeTab === 'shortcuts' }" @click="activeTab = 'shortcuts'">
-            快捷键与鼠标手势
+            {{ t("settings.navShortcuts") }}
           </button>
           <button class="s-nav-item" :class="{ active: activeTab === 'terminal' }" @click="activeTab = 'terminal'">
-            命令终端
+            {{ t("settings.navTerminal") }}
           </button>
           <button class="s-nav-item" :class="{ active: activeTab === 'about' }" @click="activeTab = 'about'">
-            关于与更新
+            {{ t("settings.navAbout") }}
           </button>
           <div class="settings-sidebar-footer">
             <button class="reset-btn" @click="settings.resetToDefaults()">
-              <RotateCcw :size="13" /> 恢复全部默认
+              <RotateCcw :size="13" /> {{ t("settings.resetAll") }}
             </button>
           </div>
         </div>
 
         <div class="settings-content">
-          <button class="close-btn" @click="stopRecordingShortcut(); emit('close')" title="关闭设置">
+          <button class="close-btn" @click="stopRecordingShortcut(); emit('close')" :title="t('settings.closeTip')">
             <X :size="18" />
           </button>
 
-          <!-- TAB 1: THEME & FONTS -->
+          <!-- TAB 1: LANGUAGE, THEME & FONTS -->
           <div v-if="activeTab === 'theme'" class="settings-page">
-            <h2 class="section-title">界面主题</h2>
+            <h2 class="section-title">{{ t("settings.langSection") }}</h2>
+            <div class="form-row">
+              <span class="row-label">{{ t("settings.langLabel") }}</span>
+              <div class="segmented">
+                <button
+                  v-for="opt in LOCALE_OPTIONS"
+                  :key="opt.value"
+                  :class="{ active: settings.state.language === opt.value }"
+                  @click="settings.state.language = opt.value"
+                >
+                  {{ opt.value === "auto" ? t("settings.langAuto") : opt.nativeLabel }}
+                </button>
+              </div>
+            </div>
+
+            <h2 class="section-title" style="margin-top: 22px">{{ t("settings.themeSection") }}</h2>
 
             <div class="form-row">
-              <span class="row-label">圆角</span>
+              <span class="row-label">{{ t("settings.borderRadius") }}</span>
               <div class="segmented">
-                <button :class="{ active: settings.state.borderRadius === 'none' }" @click="settings.state.borderRadius = 'none'">直角</button>
-                <button :class="{ active: settings.state.borderRadius === 'half' }" @click="settings.state.borderRadius = 'half'">半圆角</button>
-                <button :class="{ active: settings.state.borderRadius === 'full' }" @click="settings.state.borderRadius = 'full'">全圆角</button>
+                <button :class="{ active: settings.state.borderRadius === 'none' }" @click="settings.state.borderRadius = 'none'">{{ t("settings.radiusNone") }}</button>
+                <button :class="{ active: settings.state.borderRadius === 'half' }" @click="settings.state.borderRadius = 'half'">{{ t("settings.radiusHalf") }}</button>
+                <button :class="{ active: settings.state.borderRadius === 'full' }" @click="settings.state.borderRadius = 'full'">{{ t("settings.radiusFull") }}</button>
               </div>
             </div>
 
             <div class="form-row">
-              <span class="row-label">边栏始终深色</span>
-              <label class="toggle-wrap"><input type="checkbox" v-model="settings.state.darkSidebarAlways" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.darkSidebarAlways ? "开启" : "关闭" }}</span></label>
+              <span class="row-label">{{ t("settings.darkSidebarAlways") }}</span>
+              <label class="toggle-wrap"><input type="checkbox" v-model="settings.state.darkSidebarAlways" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.darkSidebarAlways ? t("common.on") : t("common.off") }}</span></label>
             </div>
 
             <div class="mode-bar">
               <div class="segmented">
-                <button :class="{ active: settings.state.appearance === 'auto' }" @click="settings.state.appearance = 'auto'"><Monitor :size="13" /> 自动</button>
-                <button :class="{ active: settings.state.appearance === 'light' }" @click="settings.state.appearance = 'light'"><Sun :size="13" /> 浅色</button>
-                <button :class="{ active: settings.state.appearance === 'dark' }" @click="settings.state.appearance = 'dark'"><Moon :size="13" /> 深色</button>
+                <button :class="{ active: settings.state.appearance === 'auto' }" @click="settings.state.appearance = 'auto'"><Monitor :size="13" /> {{ t("settings.appearanceAuto") }}</button>
+                <button :class="{ active: settings.state.appearance === 'light' }" @click="settings.state.appearance = 'light'"><Sun :size="13" /> {{ t("settings.appearanceLight") }}</button>
+                <button :class="{ active: settings.state.appearance === 'dark' }" @click="settings.state.appearance = 'dark'"><Moon :size="13" /> {{ t("settings.appearanceDark") }}</button>
               </div>
 
               <div class="segmented">
-                <button :class="{ active: settings.state.renderColorMode === 'colorful' }" @click="settings.state.renderColorMode = 'colorful'"><Palette :size="13" /> 彩色渲染</button>
-                <button :class="{ active: settings.state.renderColorMode === 'monochrome' }" @click="settings.state.renderColorMode = 'monochrome'"><Mountain :size="13" /> 单色渲染</button>
+                <button :class="{ active: settings.state.renderColorMode === 'colorful' }" @click="settings.state.renderColorMode = 'colorful'"><Palette :size="13" /> {{ t("settings.renderColorful") }}</button>
+                <button :class="{ active: settings.state.renderColorMode === 'monochrome' }" @click="settings.state.renderColorMode = 'monochrome'"><Mountain :size="13" /> {{ t("settings.renderMonochrome") }}</button>
               </div>
             </div>
 
-            <p class="color-mode-hint">
-              <strong>彩色渲染</strong>：使用主题配色区分标题、加粗、行内代码、链接与引用线；
-              <strong>单色渲染</strong>：将所有 Markdown 语法统一为黑白灰墨色层级，专注写作与纸质阅读体验。
+            <p class="setting-hint">
+              <strong>{{ t("settings.colorModeHintColorful") }}</strong>{{ t("settings.colorModeHintColorfulDesc") }}
+              <strong>{{ t("settings.colorModeHintMono") }}</strong>{{ t("settings.colorModeHintMonoDesc") }}
             </p>
 
             <div class="theme-grid">
               <div
-                v-for="t in visibleThemes"
-                :key="t.id"
+                v-for="tItem in visibleThemes"
+                :key="tItem.id"
                 class="theme-card"
-                :class="{ selected: activeThemeId === t.id }"
-                :style="{ background: t.bgBase, borderColor: activeThemeId === t.id ? t.accent : t.border, color: t.textPrimary }"
-                @click="selectTheme(t.id, t.mode)"
+                :class="{ selected: activeThemeId === tItem.id }"
+                :style="{ background: tItem.bgBase, borderColor: activeThemeId === tItem.id ? tItem.accent : tItem.border, color: tItem.textPrimary }"
+                @click="selectTheme(tItem.id, tItem.mode)"
               >
                 <div class="theme-card-top">
-                  <div class="swatches"><span v-for="(c, idx) in t.swatches" :key="idx" class="swatch-dot" :style="{ background: c }" /></div>
+                  <div class="swatches"><span v-for="(c, idx) in tItem.swatches" :key="idx" class="swatch-dot" :style="{ background: c }" /></div>
                   <button
-                    v-if="isCustomTheme(t.id)"
+                    v-if="isCustomTheme(tItem.id)"
                     type="button"
                     class="theme-del-btn"
-                    title="删除此自定义主题"
-                    @click.stop="handleDeleteCustomTheme(t.id)"
+                    :title="t('settings.deleteCustomThemeTip')"
+                    @click.stop="handleDeleteCustomTheme(tItem.id)"
                   >
                     <Trash2 :size="12" />
                   </button>
                 </div>
                 <div class="theme-card-footer">
-                  <span class="theme-card-name">{{ t.name }}</span>
-                  <span v-if="isCustomTheme(t.id)" class="custom-tag">自定义</span>
+                  <span class="theme-card-name">{{ tItem.name }}</span>
+                  <span v-if="isCustomTheme(tItem.id)" class="custom-tag">{{ t("common.custom") }}</span>
                 </div>
               </div>
 
               <!-- Add New Custom Theme Card -->
               <button type="button" class="theme-card theme-add-card" @click="startNewCustomTheme">
                 <Plus :size="16" />
-                <span>新增自定义配色</span>
+                <span>{{ t("settings.addCustomTheme") }}</span>
               </button>
             </div>
 
@@ -570,28 +589,28 @@ onBeforeUnmount(() => {
                     :class="{ active: themeEditorMode === 'visual' }"
                     @click="themeEditorMode = 'visual'"
                   >
-                    <Palette :size="12" /> 可视化微调
+                    <Palette :size="12" /> {{ t("settings.visualTweak") }}
                   </button>
                   <button
                     :class="{ active: themeEditorMode === 'yaml' }"
                     @click="themeEditorMode = 'yaml'; syncYamlFromEffective(false)"
                   >
-                    <Code2 :size="12" /> YAML 代码编辑
+                    <Code2 :size="12" /> {{ t("settings.yamlEdit") }}
                   </button>
                 </div>
 
                 <div class="theme-io-actions">
-                  <button class="mini-action-btn" @click="handleCopyYaml" title="复制当前配色 YAML">
-                    <Copy :size="12" /> 复制
+                  <button class="mini-action-btn" @click="handleCopyYaml" :title="t('settings.copyYamlTip')">
+                    <Copy :size="12" /> {{ t("common.copy") }}
                   </button>
-                  <button class="mini-action-btn" @click="handlePasteYaml" title="从剪贴板粘贴 YAML">
-                    <ClipboardPaste :size="12" /> 粘贴
+                  <button class="mini-action-btn" @click="handlePasteYaml" :title="t('settings.pasteYamlTip')">
+                    <ClipboardPaste :size="12" /> {{ t("common.paste") }}
                   </button>
-                  <button class="mini-action-btn" @click="triggerImportYamlFile" title="导入 .yaml 配色文件">
-                    <Upload :size="12" /> 导入
+                  <button class="mini-action-btn" @click="triggerImportYamlFile" :title="t('settings.importYamlTip')">
+                    <Upload :size="12" /> {{ t("common.import") }}
                   </button>
-                  <button class="mini-action-btn" @click="handleExportYamlFile" title="导出为 .yaml 文件">
-                    <Download :size="12" /> 导出
+                  <button class="mini-action-btn" @click="handleExportYamlFile" :title="t('settings.exportYamlTip')">
+                    <Download :size="12" /> {{ t("common.export") }}
                   </button>
                   <input
                     ref="yamlFileInputRef"
@@ -619,14 +638,14 @@ onBeforeUnmount(() => {
                       @input="onCustomColorInput(field.key, $event)"
                     />
                     <div class="color-chip-meta">
-                      <span class="color-chip-label">{{ field.label }}</span>
+                      <span class="color-chip-label">{{ t(`settings.colorLabels.${field.key}` as MessageKey) }}</span>
                       <span class="color-chip-hex">{{ getColorPickerValue(field.key) }}</span>
                     </div>
                     <button
                       v-if="settings.state.customColors[field.key]"
                       type="button"
                       class="color-reset-dot"
-                      title="恢复预设颜色"
+                      :title="t('settings.resetColorTip')"
                       @click.prevent="settings.setCustomColor(field.key, '')"
                     >
                       <RotateCcw :size="11" />
@@ -636,13 +655,13 @@ onBeforeUnmount(() => {
 
                 <div class="yaml-footer-bar">
                   <span v-if="yamlFeedback" class="yaml-ok-msg">{{ yamlFeedback }}</span>
-                  <span v-else class="yaml-tip-msg">微调后可点击右侧保存为独立的新主题卡片</span>
+                  <span v-else class="yaml-tip-msg">{{ t("settings.visualSaveTip") }}</span>
                   <div class="yaml-footer-btns">
                     <button v-if="hasCustomColors" class="mini-action-btn" @click="settings.resetCustomColors()">
-                      <RotateCcw :size="12" /> 重置微调
+                      <RotateCcw :size="12" /> {{ t("settings.resetTweaks") }}
                     </button>
                     <button class="mini-action-btn accent" @click="handleSaveVisualAsNewTheme">
-                      <Save :size="12" /> 另存为新主题
+                      <Save :size="12" /> {{ t("settings.saveAsNewTheme") }}
                     </button>
                   </div>
                 </div>
@@ -654,7 +673,7 @@ onBeforeUnmount(() => {
                   v-model="yamlDraft"
                   class="yaml-editor-textarea"
                   spellcheck="false"
-                  placeholder="粘贴或编写 Folia 主题 YAML 配置..."
+                  :placeholder="t('settings.yamlPlaceholder')"
                 />
                 <div v-if="yamlError" class="yaml-error-msg">
                   <AlertCircle :size="13" /> {{ yamlError }}
@@ -662,7 +681,7 @@ onBeforeUnmount(() => {
                 <div class="yaml-footer-bar">
                   <span v-if="yamlFeedback" class="yaml-ok-msg">{{ yamlFeedback }}</span>
                   <span v-else class="yaml-tip-msg">
-                    支持 <code>name</code>、<code>mode: light|dark</code> 与 <code>colors</code>，未写字段自动补全
+                    {{ t("settings.yamlTipPrefix") }} <code>name</code> / <code>mode: light|dark</code> / <code>colors</code>{{ t("settings.yamlTipSuffix") }}
                   </span>
                   <div class="yaml-footer-btns">
                     <button
@@ -670,40 +689,40 @@ onBeforeUnmount(() => {
                       class="mini-action-btn"
                       @click="handleUpdateEditingCustomTheme"
                     >
-                      <Save :size="12" /> 更新当前主题
+                      <Save :size="12" /> {{ t("settings.updateCurrentTheme") }}
                     </button>
                     <button class="mini-action-btn accent" @click="handleSaveYamlAsNew">
-                      <Plus :size="12" /> 保存为新主题
+                      <Plus :size="12" /> {{ t("settings.saveNewTheme") }}
                     </button>
                   </div>
                 </div>
               </template>
             </div>
 
-            <h2 class="section-title" style="margin-top: 26px">字体与缩放</h2>
+            <h2 class="section-title" style="margin-top: 26px">{{ t("settings.fontsSection") }}</h2>
 
             <div class="form-row">
-              <span class="row-label">界面字体</span>
-              <input v-model="settings.state.uiFont" placeholder="留空则使用系统默认中文字体" class="pill-input" />
+              <span class="row-label">{{ t("settings.uiFont") }}</span>
+              <input v-model="settings.state.uiFont" :placeholder="t('settings.uiFontPlaceholder')" class="pill-input" />
             </div>
 
             <div class="form-row">
-              <span class="row-label">编辑器字体</span>
-              <input v-model="settings.state.editorFont" placeholder="例如 Consolas, JetBrains Mono" class="pill-input" />
+              <span class="row-label">{{ t("settings.editorFont") }}</span>
+              <input v-model="settings.state.editorFont" :placeholder="t('settings.editorFontPlaceholder')" class="pill-input" />
             </div>
 
             <div class="form-row">
-              <span class="row-label">编辑器字号 / 行高</span>
+              <span class="row-label">{{ t("settings.editorFontSizeLineHeight") }}</span>
               <div class="inline-controls">
                 <input type="number" v-model.number="settings.state.editorFontSize" min="12" max="26" class="num-input" />
                 <span class="unit">px</span>
                 <input type="number" v-model.number="settings.state.editorLineHeight" step="0.05" min="1.3" max="2.4" class="num-input" />
-                <span class="unit">倍行距</span>
+                <span class="unit">{{ t("settings.lineHeightUnit") }}</span>
               </div>
             </div>
 
             <div class="form-row">
-              <span class="row-label">界面缩放系数</span>
+              <span class="row-label">{{ t("settings.uiScale") }}</span>
               <div class="stepper">
                 <button @click="adjustScale(-0.1)">-</button>
                 <span>{{ settings.state.uiScale.toFixed(1) }}</span>
@@ -714,144 +733,141 @@ onBeforeUnmount(() => {
 
           <!-- TAB 2: EDITOR, SAVING & ATTACHMENTS -->
           <div v-else-if="activeTab === 'editor'" class="settings-page">
-            <h2 class="section-title">编辑与视图</h2>
+            <h2 class="section-title">{{ t("settings.editorViewSection") }}</h2>
             <div class="form-row">
-              <span class="row-label">默认编辑模式</span>
+              <span class="row-label">{{ t("settings.defaultEditMode") }}</span>
               <div class="segmented">
-                <button :class="{ active: settings.state.defaultEditMode === 'live' }" @click="settings.state.defaultEditMode = 'live'">实时预览</button>
-                <button :class="{ active: settings.state.defaultEditMode === 'source' }" @click="settings.state.defaultEditMode = 'source'">源码模式</button>
+                <button :class="{ active: settings.state.defaultEditMode === 'live' }" @click="settings.state.defaultEditMode = 'live'">{{ t("settings.editModeLive") }}</button>
+                <button :class="{ active: settings.state.defaultEditMode === 'source' }" @click="settings.state.defaultEditMode = 'source'">{{ t("settings.editModeSource") }}</button>
               </div>
             </div>
             <div class="form-row">
-              <span class="row-label">页面内容布局</span>
+              <span class="row-label">{{ t("settings.pageLayout") }}</span>
               <div class="segmented">
-                <button :class="{ active: settings.state.editorPageLayout === 'left' }" @click="settings.state.editorPageLayout = 'left'">靠左显示</button>
-                <button :class="{ active: settings.state.editorPageLayout === 'center' }" @click="settings.state.editorPageLayout = 'center'">页面居中</button>
+                <button :class="{ active: settings.state.editorPageLayout === 'left' }" @click="settings.state.editorPageLayout = 'left'">{{ t("settings.layoutLeft") }}</button>
+                <button :class="{ active: settings.state.editorPageLayout === 'center' }" @click="settings.state.editorPageLayout = 'center'">{{ t("settings.layoutCenter") }}</button>
               </div>
             </div>
             <div v-if="settings.state.editorPageLayout === 'center'" class="form-row">
-              <span class="row-label">居中内容最大宽度</span>
+              <span class="row-label">{{ t("settings.centerMaxWidth") }}</span>
               <div class="inline-controls">
                 <input type="number" v-model.number="settings.state.editorMaxWidth" step="20" min="560" max="1400" class="num-input" />
                 <span class="unit">px</span>
               </div>
             </div>
-            <div class="form-row"><span class="row-label">显示行号</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.showLineNumbers" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.showLineNumbers ? "开启" : "关闭" }}</span></label></div>
-            <div class="form-row"><span class="row-label">显示右侧缩略图</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.showMinimap" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.showMinimap ? "开启" : "关闭" }}</span></label></div>
-            <div class="form-row"><span class="row-label">自动换行</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.wordWrap" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.wordWrap ? "开启" : "关闭" }}</span></label></div>
+            <div class="form-row"><span class="row-label">{{ t("settings.showLineNumbers") }}</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.showLineNumbers" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.showLineNumbers ? t("common.on") : t("common.off") }}</span></label></div>
+            <div class="form-row"><span class="row-label">{{ t("settings.showMinimap") }}</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.showMinimap" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.showMinimap ? t("common.on") : t("common.off") }}</span></label></div>
+            <div class="form-row"><span class="row-label">{{ t("settings.wordWrap") }}</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.wordWrap" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.wordWrap ? t("common.on") : t("common.off") }}</span></label></div>
             <div class="form-row">
-              <span class="row-label">双向链接写入格式</span>
+              <span class="row-label">{{ t("settings.linkInsertFormat") }}</span>
               <div class="segmented">
-                <button :class="{ active: settings.state.linkInsertFormat === 'markdown' }" @click="settings.state.linkInsertFormat = 'markdown'">标准相对路径 [名称](路径.md)</button>
-                <button :class="{ active: settings.state.linkInsertFormat === 'wikilink' }" @click="settings.state.linkInsertFormat = 'wikilink'">[[双链语法]]</button>
+                <button :class="{ active: settings.state.linkInsertFormat === 'markdown' }" @click="settings.state.linkInsertFormat = 'markdown'">{{ t("settings.linkFormatMd") }}</button>
+                <button :class="{ active: settings.state.linkInsertFormat === 'wikilink' }" @click="settings.state.linkInsertFormat = 'wikilink'">{{ t("settings.linkFormatWiki") }}</button>
               </div>
             </div>
 
-            <h2 class="section-title" style="margin-top: 24px">自动保存与防覆盖</h2>
-            <div class="form-row"><span class="row-label">开启自动保存</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.autoSaveEnabled" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.autoSaveEnabled ? "开启" : "关闭" }}</span></label></div>
+            <h2 class="section-title" style="margin-top: 24px">{{ t("settings.autoSaveSection") }}</h2>
+            <div class="form-row"><span class="row-label">{{ t("settings.autoSaveEnabled") }}</span><label class="toggle-wrap"><input type="checkbox" v-model="settings.state.autoSaveEnabled" /><span class="toggle-track" /><span class="toggle-text">{{ settings.state.autoSaveEnabled ? t("common.on") : t("common.off") }}</span></label></div>
             <div class="form-row">
-              <span class="row-label">自动保存延迟</span>
-              <div class="inline-controls"><input type="number" v-model.number="settings.state.autoSaveDelayMs" step="200" min="300" max="10000" class="num-input" /><span class="unit">毫秒 (ms)</span></div>
+              <span class="row-label">{{ t("settings.autoSaveDelay") }}</span>
+              <div class="inline-controls"><input type="number" v-model.number="settings.state.autoSaveDelayMs" step="200" min="300" max="10000" class="num-input" /><span class="unit">{{ t("settings.msUnit") }}</span></div>
             </div>
 
-            <h2 class="section-title" style="margin-top: 24px">本地版本历史（不写入笔记库）</h2>
+            <h2 class="section-title" style="margin-top: 24px">{{ t("settings.historySection") }}</h2>
             <div class="form-row">
-              <span class="row-label">开启本地版本历史</span>
+              <span class="row-label">{{ t("settings.historyEnabled") }}</span>
               <label class="toggle-wrap">
                 <input type="checkbox" v-model="settings.state.historyEnabled" />
                 <span class="toggle-track" />
-                <span class="toggle-text">{{ settings.state.historyEnabled ? "开启" : "关闭" }}</span>
+                <span class="toggle-text">{{ settings.state.historyEnabled ? t("common.on") : t("common.off") }}</span>
               </label>
             </div>
             <div v-if="settings.state.historyEnabled" class="form-row">
-              <span class="row-label">自动快照间隔</span>
+              <span class="row-label">{{ t("settings.historyInterval") }}</span>
               <div class="inline-controls">
                 <input type="number" v-model.number="settings.state.historyIntervalMinutes" step="1" min="1" max="60" class="num-input" />
-                <span class="unit">分钟（Ctrl+S 手动保存会立即记录）</span>
+                <span class="unit">{{ t("settings.historyIntervalUnit") }}</span>
               </div>
             </div>
             <div v-if="settings.state.historyEnabled" class="form-row">
-              <span class="row-label">单文件最多保留版本</span>
+              <span class="row-label">{{ t("settings.historyMaxSnapshots") }}</span>
               <div class="inline-controls">
                 <input type="number" v-model.number="settings.state.historyMaxSnapshots" step="5" min="5" max="200" class="num-input" />
-                <span class="unit">个（超出自动清理最旧版本）</span>
+                <span class="unit">{{ t("settings.historyMaxUnit") }}</span>
               </div>
             </div>
             <div class="form-row">
-              <span class="row-label">历史缓存管理</span>
+              <span class="row-label">{{ t("settings.historyCache") }}</span>
               <div class="inline-controls">
-                <span class="unit">已缓存 {{ historyCacheStats.totalSnapshots }} 份 · {{ formatBytes(historyCacheStats.totalBytes) }}</span>
+                <span class="unit">{{ t("settings.historyCacheStat", { count: historyCacheStats.totalSnapshots, size: formatBytes(historyCacheStats.totalBytes) }) }}</span>
                 <button class="mini-action-btn" @click="handleClearAllHistory">
-                  <Trash2 :size="12" /> 清空全部历史
+                  <Trash2 :size="12" /> {{ t("settings.historyClearAll") }}
                 </button>
                 <span v-if="historyClearFeedback" class="yaml-ok-msg">{{ historyClearFeedback }}</span>
               </div>
             </div>
-            <p class="color-mode-hint">
-              历史快照仅存放在 Folia 应用数据目录（便携版为 <code>data/history/</code>），绝不在你的笔记库中生成任何隐藏文件。
+            <p class="setting-hint">
+              {{ t("settings.historyStorageHint") }}
             </p>
 
-            <h2 class="section-title" style="margin-top: 24px">图片与附件保存位置</h2>
+            <h2 class="section-title" style="margin-top: 24px">{{ t("settings.imagesSection") }}</h2>
             <div class="form-row">
-              <span class="row-label">粘贴/拖入图片位置</span>
+              <span class="row-label">{{ t("settings.imageStrategy") }}</span>
               <select v-model="settings.state.imageSaveStrategy" class="pill-select">
-                <option value="noteSubfolder">当前笔记所在目录的子文件夹</option>
-                <option value="sameDir">与当前笔记同级目录</option>
-                <option value="workspaceSubfolder">工作区根目录下的子文件夹</option>
+                <option value="noteSubfolder">{{ t("settings.imgNoteSubfolder") }}</option>
+                <option value="sameDir">{{ t("settings.imgSameDir") }}</option>
+                <option value="workspaceSubfolder">{{ t("settings.imgWorkspaceSubfolder") }}</option>
               </select>
             </div>
             <div v-if="settings.state.imageSaveStrategy !== 'sameDir'" class="form-row">
-              <span class="row-label">子文件夹名称</span>
+              <span class="row-label">{{ t("settings.subfolderName") }}</span>
               <input v-model="settings.state.imageSubfolderName" class="pill-input" placeholder="images" />
             </div>
 
-            <h2 class="section-title" style="margin-top: 24px">窗口与系统托盘</h2>
+            <h2 class="section-title" style="margin-top: 24px">{{ t("settings.traySection") }}</h2>
             <div class="form-row">
-              <span class="row-label">点击最小化按钮时最小化到系统托盘</span>
+              <span class="row-label auto-width">{{ t("settings.minToTray") }}</span>
               <label class="toggle-wrap">
                 <input type="checkbox" v-model="settings.state.minimizeToTray" />
                 <span class="toggle-track" />
-                <span class="toggle-text">{{ settings.state.minimizeToTray ? "开启" : "关闭" }}</span>
+                <span class="toggle-text">{{ settings.state.minimizeToTray ? t("common.on") : t("common.off") }}</span>
               </label>
             </div>
             <div class="form-row">
-              <span class="row-label">点击关闭按钮时最小化到系统托盘</span>
+              <span class="row-label auto-width">{{ t("settings.closeToTray") }}</span>
               <label class="toggle-wrap">
                 <input type="checkbox" v-model="settings.state.closeToTray" />
                 <span class="toggle-track" />
-                <span class="toggle-text">{{ settings.state.closeToTray ? "开启" : "关闭" }}</span>
+                <span class="toggle-text">{{ settings.state.closeToTray ? t("common.on") : t("common.off") }}</span>
               </label>
             </div>
-            <p class="color-mode-hint">
-              开启后窗口将隐藏到任务栏右下角系统托盘；左键点击托盘图标可恢复主窗口，右键菜单可彻底退出 Folia。
-            </p>
           </div>
 
           <!-- TAB 3: EDITABLE SHORTCUTS & MOUSE GESTURES -->
           <div v-else-if="activeTab === 'shortcuts'" class="settings-page">
             <div class="section-header-row">
-              <h2 class="section-title no-border">鼠标手势（按住鼠标右键拖动）</h2>
+              <h2 class="section-title no-border">{{ t("settings.gesturesSection") }}</h2>
               <div class="section-header-actions">
                 <button class="mini-action-btn" @click="settings.addGesture()">
-                  <Plus :size="13" /> 添加手势
+                  <Plus :size="13" /> {{ t("settings.addGesture") }}
                 </button>
                 <button class="mini-action-btn" @click="settings.resetAllGestures()">
-                  <RotateCcw :size="12" /> 恢复默认
+                  <RotateCcw :size="12" /> {{ t("common.resetDefault") }}
                 </button>
               </div>
             </div>
 
             <div class="form-row">
-              <span class="row-label">启用右键鼠标手势</span>
+              <span class="row-label">{{ t("settings.enableGestures") }}</span>
               <label class="toggle-wrap">
                 <input type="checkbox" v-model="settings.state.mouseGesturesEnabled" />
                 <span class="toggle-track" />
-                <span class="toggle-text">{{ settings.state.mouseGesturesEnabled ? "开启" : "关闭" }}</span>
+                <span class="toggle-text">{{ settings.state.mouseGesturesEnabled ? t("common.on") : t("common.off") }}</span>
               </label>
             </div>
 
-            <p class="edit-hint">
-              在“按住拖动录制”按钮上直接拖动鼠标即可录制新轨迹，或直接输入方向字母（L=左、R=右、U=上、D=下）。
+            <p class="setting-hint">
+              {{ t("settings.gesturesHint") }}
             </p>
 
             <div class="shortcut-list" style="margin-bottom: 24px">
@@ -866,23 +882,23 @@ onBeforeUnmount(() => {
                   data-gesture-recorder="true"
                   @mousedown="startGesturePadDown(idx, $event)"
                   @contextmenu.prevent
-                  title="按住鼠标左键或右键并拖动以录制轨迹"
+                  :title="t('settings.gestureRecordTip')"
                 >
                   <template v-if="recordingGestureIdx === idx">
-                    {{ gestureDraftSeq ? formatGestureSequence(gestureDraftSeq) : "拖动录制中..." }}
+                    {{ gestureDraftSeq ? formatGestureSequence(gestureDraftSeq) : t("settings.gestureRecording") }}
                   </template>
                   <template v-else>
-                    {{ formatGestureSequence(g.sequence) || "拖动录制" }}
+                    {{ formatGestureSequence(g.sequence) || t("settings.gestureRecordIdle") }}
                   </template>
                 </button>
 
                 <input
                   :value="g.sequence"
                   @input="onGestureSeqInput(idx, $event)"
-                  placeholder="如 L / DR"
+                  :placeholder="t('settings.gestureSeqPlaceholder')"
                   maxlength="4"
                   class="seq-input"
-                  title="手动输入方向序列（L/R/U/D）"
+                  :title="t('settings.gestureSeqTip')"
                 />
 
                 <select
@@ -891,46 +907,46 @@ onBeforeUnmount(() => {
                   class="gesture-action-select"
                 >
                   <option v-for="opt in GESTURE_ACTION_OPTIONS" :key="opt.value" :value="opt.value">
-                    {{ opt.label }}
+                    {{ getGestureActionLabel(opt.value) }}
                   </option>
                 </select>
 
-                <button class="row-icon-btn danger" @click="settings.removeGesture(idx)" title="删除该手势">
+                <button class="row-icon-btn danger" @click="settings.removeGesture(idx)" :title="t('settings.deleteGestureTip')">
                   <Trash2 :size="14" />
                 </button>
               </div>
             </div>
 
             <div class="section-header-row">
-              <h2 class="section-title no-border">全局快捷键</h2>
+              <h2 class="section-title no-border">{{ t("settings.shortcutsSection") }}</h2>
               <div class="section-header-actions">
                 <button class="mini-action-btn" @click="settings.resetAllShortcuts()">
-                  <RotateCcw :size="12" /> 恢复默认
+                  <RotateCcw :size="12" /> {{ t("common.resetDefault") }}
                 </button>
               </div>
             </div>
 
-            <p class="edit-hint">
-              点击右侧快捷键按钮后按下新的组合键即可修改；按 <kbd>Esc</kbd> 取消录制，按 <kbd>Backspace</kbd> 清除绑定。
+            <p class="setting-hint">
+              {{ t("settings.shortcutsHintPrefix") }} <kbd>Esc</kbd> {{ t("settings.shortcutsHintMid") }} <kbd>Backspace</kbd> {{ t("settings.shortcutsHintSuffix") }}
             </p>
 
             <div class="shortcut-list">
               <div v-for="s in effectiveShortcuts" :key="s.id" class="shortcut-row">
-                <span class="shortcut-label">{{ s.label }}</span>
+                <span class="shortcut-label">{{ getShortcutLabel(s.id) }}</span>
                 <div class="shortcut-controls">
                   <button
                     class="kbd-edit-btn"
                     :class="{ recording: recordingShortcutId === s.id, unbound: !s.combo }"
                     @click="startRecordingShortcut(s.id)"
-                    title="点击后按下新快捷键"
+                    :title="t('settings.shortcutClickTip')"
                   >
-                    {{ recordingShortcutId === s.id ? "请按下组合键..." : formatComboForPlatform(s.combo) }}
+                    {{ recordingShortcutId === s.id ? t("settings.shortcutPressKey") : formatComboForPlatform(s.combo) }}
                   </button>
                   <button
                     v-if="isShortcutCustomized(s.id)"
                     class="row-icon-btn"
                     @click="settings.resetShortcut(s.id)"
-                    :title="`恢复默认: ${formatComboForPlatform(DEFAULT_SHORTCUTS.find((d) => d.id === s.id)?.combo ?? '')}`"
+                    :title="t('settings.shortcutResetTip', { combo: formatComboForPlatform(DEFAULT_SHORTCUTS.find((d) => d.id === s.id)?.combo ?? '') })"
                   >
                     <RotateCcw :size="13" />
                   </button>
@@ -941,42 +957,42 @@ onBeforeUnmount(() => {
 
           <!-- TAB 4: TERMINAL SETTINGS -->
           <div v-else-if="activeTab === 'terminal'" class="settings-page">
-            <h2 class="section-title">默认终端程序</h2>
+            <h2 class="section-title">{{ t("settings.terminalSection") }}</h2>
 
             <div class="form-row">
-              <span class="row-label">默认终端类型</span>
+              <span class="row-label">{{ t("settings.terminalType") }}</span>
               <select v-model="settings.state.terminalShell" class="pill-select">
-                <option value="git-bash">Git Bash（推荐默认，未安装自动回退）</option>
+                <option value="git-bash">{{ t("settings.termGitBash") }}</option>
                 <option value="powershell">PowerShell</option>
-                <option value="cmd">命令提示符 (CMD)</option>
-                <option value="zsh">Zsh / Bash（macOS / Linux）</option>
-                <option value="custom">自定义终端路径</option>
+                <option value="cmd">{{ t("settings.termCmd") }}</option>
+                <option value="zsh">{{ t("settings.termZsh") }}</option>
+                <option value="custom">{{ t("settings.termCustom") }}</option>
               </select>
             </div>
 
             <div v-if="settings.state.terminalShell === 'custom'" class="form-row">
-              <span class="row-label">自定义程序路径</span>
+              <span class="row-label">{{ t("settings.termCustomPath") }}</span>
               <input
                 v-model="settings.state.terminalCustomPath"
-                placeholder="例如 C:\Program Files\Git\bin\bash.exe"
+                placeholder="C:\Program Files\Git\bin\bash.exe"
                 class="pill-input"
               />
             </div>
 
             <div v-if="detectedShells.length > 0" class="shell-detect-box">
-              <div class="shell-detect-title">本机已探测到的终端：</div>
+              <div class="shell-detect-title">{{ t("settings.termDetectedTitle") }}</div>
               <div v-for="sh in detectedShells" :key="sh.id" class="shell-detect-row">
                 <span class="sd-name">{{ sh.label }}</span>
                 <span class="sd-status" :class="{ ok: sh.available }">
-                  {{ sh.available ? sh.path || "可用" : "未检测到" }}
+                  {{ sh.available ? sh.path || t("common.available") : t("common.notDetected") }}
                 </span>
               </div>
             </div>
 
-            <h2 class="section-title" style="margin-top: 24px">终端外观与字体</h2>
+            <h2 class="section-title" style="margin-top: 24px">{{ t("settings.termAppearanceSection") }}</h2>
 
             <div class="form-row">
-              <span class="row-label">终端字体</span>
+              <span class="row-label">{{ t("settings.termFont") }}</span>
               <input
                 v-model="settings.state.terminalFont"
                 placeholder="Cascadia Mono, Consolas, JetBrains Mono, monospace"
@@ -985,7 +1001,7 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="form-row">
-              <span class="row-label">字号 / 行高</span>
+              <span class="row-label">{{ t("settings.termSizeLineHeight") }}</span>
               <div class="inline-controls">
                 <input
                   type="number"
@@ -1003,91 +1019,91 @@ onBeforeUnmount(() => {
                   max="2.0"
                   class="num-input"
                 />
-                <span class="unit">倍行距</span>
+                <span class="unit">{{ t("settings.lineHeightUnit") }}</span>
               </div>
             </div>
 
             <div class="form-row">
-              <span class="row-label">光标样式</span>
+              <span class="row-label">{{ t("settings.termCursorStyle") }}</span>
               <div class="segmented">
                 <button
                   :class="{ active: settings.state.terminalCursorStyle === 'bar' }"
                   @click="settings.state.terminalCursorStyle = 'bar'"
                 >
-                  竖线
+                  {{ t("settings.cursorBar") }}
                 </button>
                 <button
                   :class="{ active: settings.state.terminalCursorStyle === 'block' }"
                   @click="settings.state.terminalCursorStyle = 'block'"
                 >
-                  方块
+                  {{ t("settings.cursorBlock") }}
                 </button>
                 <button
                   :class="{ active: settings.state.terminalCursorStyle === 'underline' }"
                   @click="settings.state.terminalCursorStyle = 'underline'"
                 >
-                  下划线
+                  {{ t("settings.cursorUnderline") }}
                 </button>
               </div>
             </div>
 
-            <p class="edit-hint">
-              点击左侧栏任意笔记库横条上的终端图标，将在右侧打开对应路径的命令分栏；支持 Ctrl+Shift+C 复制与 Ctrl+Shift+V 粘贴。
+            <p class="setting-hint">
+              {{ t("settings.termHint") }}
             </p>
           </div>
 
           <!-- TAB 5: ABOUT & AUTO UPDATE -->
           <div v-else class="settings-page">
-            <h2 class="section-title">关于 Folia</h2>
+            <h2 class="section-title">{{ t("settings.aboutSection") }}</h2>
 
             <div class="about-hero">
               <img src="/logo.svg" alt="Folia Logo" class="about-logo" />
               <div class="about-meta">
                 <div class="about-title-row">
-                  <span class="about-name">Folia</span>
+                  <span class="about-name">{{ t("app.windowTitle") }}</span>
                   <span class="version-badge">v{{ APP_VERSION }}</span>
                 </div>
                 <p class="about-desc">
-                  本地文件夹优先、零隐藏数据库的轻量跨平台 Markdown 笔记工作台。
+                  {{ t("app.aboutDesc") }}
                 </p>
               </div>
             </div>
 
             <div class="about-info-list">
               <div class="about-info-row">
-                <span class="about-key">作者</span>
+                <span class="about-key">{{ t("settings.author") }}</span>
                 <span class="about-val">
-                  {{ APP_AUTHOR }}（
+                  {{ APP_AUTHOR }} (
                   <button class="link-btn" @click="openExternal(APP_AUTHOR_URL)">
                     mianao.info <ExternalLink :size="12" />
                   </button>
-                  ）
+                  )
                 </span>
               </div>
               <div class="about-info-row">
-                <span class="about-key">当前版本</span>
+                <span class="about-key">{{ t("settings.currentVersion") }}</span>
                 <span class="about-val mono">v{{ APP_VERSION }}</span>
               </div>
               <div class="about-info-row">
-                <span class="about-key">开源协议</span>
+                <span class="about-key">{{ t("settings.license") }}</span>
                 <span class="about-val">{{ APP_LICENSE }}</span>
               </div>
               <div class="about-info-row">
-                <span class="about-key">项目仓库</span>
+                <span class="about-key">{{ t("settings.repo") }}</span>
                 <button class="link-btn" @click="openExternal(GITHUB_REPO_URL)">
                   github.com/harry10086/Folia <ExternalLink :size="12" />
                 </button>
               </div>
             </div>
 
-            <h2 class="section-title" style="margin-top: 26px">自动更新</h2>
+            <h2 class="section-title" style="margin-top: 26px">{{ t("settings.updateSection") }}</h2>
 
             <div class="form-row">
-              <span class="row-label">启动时自动检查更新</span>
+              <span class="row-label">{{ t("settings.autoCheckUpdates") }}</span>
               <label class="toggle-wrap">
                 <input type="checkbox" v-model="settings.state.autoCheckUpdates" />
                 <span class="toggle-track" />
-                <span class="toggle-text">{{ settings.state.autoCheckUpdates ? "开启" : "关闭" }}</span>
+                <span class="toggle-text">{{ settings.state.autoCheckUpdates ? t("common.on") : t("common.off") }}</span>
               </label>
             </div>
 
@@ -1098,7 +1114,7 @@ onBeforeUnmount(() => {
                 @click="handleCheckUpdate"
               >
                 <RefreshCw :size="14" :class="{ spin: checkingUpdate }" />
-                <span>{{ checkingUpdate ? "正在检查 GitHub Release..." : "检查 GitHub 新版本" }}</span>
+                <span>{{ checkingUpdate ? t("settings.checkingUpdate") : t("settings.checkUpdateBtn") }}</span>
               </button>
             </div>
 
@@ -1106,12 +1122,12 @@ onBeforeUnmount(() => {
               <template v-if="updateResult.status === 'update-available'">
                 <div class="ur-head">
                   <Download :size="16" />
-                  <strong>发现新版本 {{ updateResult.latestVersion }}</strong>
+                  <strong>{{ t("settings.newVersionFound", { version: updateResult.latestVersion ?? "" }) }}</strong>
                 </div>
                 <p v-if="updateResult.notes" class="ur-notes">{{ updateResult.notes.slice(0, 320) }}</p>
                 <div class="ur-actions">
                   <button class="update-download-btn" @click="openExternal(updateResult.releaseUrl)">
-                    <ExternalLink :size="13" /> 前往 GitHub 下载更新
+                    <ExternalLink :size="13" /> {{ t("settings.goDownloadUpdate") }}
                   </button>
                 </div>
               </template>
@@ -1119,11 +1135,11 @@ onBeforeUnmount(() => {
               <template v-else-if="updateResult.status === 'up-to-date'">
                 <div class="ur-head">
                   <CheckCircle2 :size="16" />
-                  <span>当前已是最新版本（v{{ updateResult.currentVersion }}，远端最新 {{ updateResult.latestVersion }}）</span>
+                  <span>{{ t("settings.upToDate", { current: updateResult.currentVersion, latest: updateResult.latestVersion ?? "" }) }}</span>
                 </div>
                 <div class="ur-actions">
                   <button class="mini-action-btn" @click="openExternal(updateResult.releaseUrl)">
-                    <ExternalLink :size="12" /> 查看版本发布页
+                    <ExternalLink :size="12" /> {{ t("settings.viewReleasePage") }}
                   </button>
                 </div>
               </template>
@@ -1131,11 +1147,11 @@ onBeforeUnmount(() => {
               <template v-else-if="updateResult.status === 'no-release'">
                 <div class="ur-head">
                   <CheckCircle2 :size="16" />
-                  <span>GitHub 仓库暂未发布正式 Release（当前版本 v{{ updateResult.currentVersion }}）</span>
+                  <span>{{ t("settings.noReleaseYet", { current: updateResult.currentVersion }) }}</span>
                 </div>
                 <div class="ur-actions">
                   <button class="mini-action-btn" @click="openExternal(updateResult.releaseUrl)">
-                    <ExternalLink :size="12" /> 查看仓库 Releases
+                    <ExternalLink :size="12" /> {{ t("settings.viewRepoReleases") }}
                   </button>
                 </div>
               </template>
@@ -1143,11 +1159,11 @@ onBeforeUnmount(() => {
               <template v-else>
                 <div class="ur-head">
                   <AlertCircle :size="16" />
-                  <span>检查更新失败：{{ updateResult.errorMessage }}</span>
+                  <span>{{ t("settings.checkUpdateFailed", { msg: updateResult.errorMessage ?? "" }) }}</span>
                 </div>
                 <div class="ur-actions">
                   <button class="mini-action-btn" @click="openExternal(updateResult.releaseUrl)">
-                    <ExternalLink :size="12" /> 手动前往 GitHub Releases
+                    <ExternalLink :size="12" /> {{ t("settings.openReleasesManually") }}
                   </button>
                 </div>
               </template>
@@ -1179,9 +1195,11 @@ onBeforeUnmount(() => {
 .section-header-actions { display: flex; align-items: center; gap: 6px; margin-right: 36px; }
 .mini-action-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: var(--radius-pill); border: 1px solid var(--border-color); background: var(--bg-base); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
 .mini-action-btn:hover { border-color: var(--accent); color: var(--accent); }
-.edit-hint { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; }
+.setting-hint { margin: 0 0 12px; font-size: 12px; line-height: 1.55; color: var(--text-muted); }
+.setting-hint strong { color: var(--text-secondary); font-weight: 600; }
 .form-row { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
 .row-label { width: 150px; flex-shrink: 0; font-size: 13px; color: var(--text-secondary); }
+.row-label.auto-width { width: auto; min-width: 248px; white-space: nowrap; }
 .segmented { display: inline-flex; border: 1px solid var(--border-color); border-radius: var(--radius-pill); padding: 2px; background: var(--bg-base); gap: 2px; }
 .segmented button { display: inline-flex; align-items: center; gap: 5px; border: none; background: transparent; padding: 5px 13px; border-radius: var(--radius-pill); font-size: 12.5px; color: var(--text-secondary); cursor: pointer; }
 .segmented button.active { background: var(--bg-active); color: var(--text-primary); font-weight: 600; }
@@ -1193,8 +1211,6 @@ onBeforeUnmount(() => {
 .toggle-wrap input:checked + .toggle-track::after { transform: translateX(18px); }
 .toggle-text { font-size: 12.5px; color: var(--text-secondary); }
 .mode-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin: 18px 0 8px; }
-.color-mode-hint { margin: 0 0 14px; font-size: 12px; line-height: 1.55; color: var(--text-muted); background: var(--bg-base); padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); }
-.color-mode-hint strong { color: var(--text-secondary); font-weight: 600; }
 .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 10px; }
 .theme-card { border: 2px solid transparent; border-radius: var(--radius-md); padding: 10px 12px; text-align: left; cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease; position: relative; }
 .theme-card:hover { transform: translateY(-1px); }

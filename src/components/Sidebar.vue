@@ -36,6 +36,7 @@ import FileTreeNode from "./FileTreeNode.vue";
 import { ipc, parseIpcError, type FileNode, type LineEnding, type SearchMatch } from "@/core/ipc/client";
 import { rewriteLinksInMarkdown } from "@/core/markdown/wikilinks";
 import {
+  getDefaultWorkspaceName,
   sortOrderLabel,
   useWorkspaceStore,
   type SortOrder,
@@ -43,6 +44,9 @@ import {
 } from "@/stores/workspace";
 import { useTabsStore } from "@/stores/tabs";
 import { useSettingsStore } from "@/stores/settings";
+import { useI18n } from "@/core/i18n";
+
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (e: "open-settings"): void;
@@ -204,8 +208,9 @@ const ctxMenu = reactive<{
 
 const promptModal = reactive<{
   open: boolean;
-  mode: "newNote" | "newFolder" | "rename";
+  mode: "newNote" | "newFolder" | "rename" | "renameWorkspace";
   title: string;
+  hint: string;
   placeholder: string;
   value: string;
   targetPath: string;
@@ -215,6 +220,7 @@ const promptModal = reactive<{
   open: false,
   mode: "newNote",
   title: "",
+  hint: "",
   placeholder: "",
   value: "",
   targetPath: "",
@@ -342,7 +348,7 @@ async function runFullTextSearch() {
     }
   } catch (err) {
     if (seq === searchReqSeq) {
-      tabsStore.showToast(`搜索失败: ${parseIpcError(err).message}`);
+      tabsStore.showToast(t("sidebar.searchFailed", { msg: parseIpcError(err).message }));
     }
   } finally {
     if (seq === searchReqSeq) {
@@ -363,13 +369,13 @@ function cycleSortOrder() {
 
 const sortLabel = computed(() => sortOrderLabel(wsStore.sortOrder));
 
-const SORT_MENU_OPTIONS: Array<{ value: SortOrder; label: string }> = [
-  { value: "name-asc", label: "名称 A → Z" },
-  { value: "name-desc", label: "名称 Z → A" },
-  { value: "mtime-desc", label: "修改时间（新 → 旧）" },
-  { value: "mtime-asc", label: "修改时间（旧 → 新）" },
-  { value: "manual", label: "手动排序（拖拽/上下移）" },
-];
+const SORT_MENU_OPTIONS = computed<Array<{ value: SortOrder; label: string }>>(() => [
+  { value: "name-asc", label: t("sort.nameAsc") },
+  { value: "name-desc", label: t("sort.nameDesc") },
+  { value: "mtime-desc", label: t("sort.mtimeDesc") },
+  { value: "mtime-asc", label: t("sort.mtimeAsc") },
+  { value: "manual", label: t("sort.manualHint") },
+]);
 
 const ctxIsWorkspaceRoot = computed(
   () =>
@@ -399,15 +405,15 @@ function handleSetContextSort(order: SortOrder | null) {
     wsStore.setWorkspaceSortOrder(ctxMenu.workspace.id, order);
     tabsStore.showToast(
       order
-        ? `笔记库「${ctxMenu.workspace.name}」排序：${sortOrderLabel(order)}`
-        : `笔记库「${ctxMenu.workspace.name}」已恢复跟随全局默认排序`
+        ? t("sort.wsSortChanged", { name: ctxMenu.workspace.name, label: sortOrderLabel(order) })
+        : t("sort.wsSortReset", { name: ctxMenu.workspace.name })
     );
   } else if (ctxMenu.node && ctxMenu.node.kind === "folder") {
     wsStore.setFolderSortOrder(ctxMenu.node.path, order, ctxMenu.node.workspaceId);
     tabsStore.showToast(
       order
-        ? `文件夹「${ctxMenu.node.name}」排序：${sortOrderLabel(order)}`
-        : `文件夹「${ctxMenu.node.name}」已恢复跟随上级排序`
+        ? t("sort.folderSortChanged", { name: ctxMenu.node.name, label: sortOrderLabel(order) })
+        : t("sort.folderSortReset", { name: ctxMenu.node.name })
     );
   }
   closeContextMenu();
@@ -419,7 +425,7 @@ function handleNudgeContextNode(delta: -1 | 1) {
   if (!node) return;
   const moved = wsStore.nudgeNodeInParent(node.path, delta);
   if (!moved) {
-    tabsStore.showToast(delta < 0 ? "已在当前目录最顶部" : "已在当前目录最底部");
+    tabsStore.showToast(delta < 0 ? t("sidebar.alreadyAtTop") : t("sidebar.alreadyAtBottom"));
   }
 }
 
@@ -447,8 +453,8 @@ function openNodeContextMenu(payload: { event: MouseEvent; node: FileNode }) {
 function openWorkspaceContextMenu(event: MouseEvent, ws: WorkspaceEntry) {
   event.preventDefault();
   ctxMenu.visible = true;
-  ctxMenu.x = Math.min(event.clientX, window.innerWidth - 225);
-  ctxMenu.y = Math.max(8, Math.min(event.clientY, window.innerHeight - 400));
+  ctxMenu.x = Math.min(event.clientX, window.innerWidth - 245);
+  ctxMenu.y = Math.max(8, Math.min(event.clientY, window.innerHeight - 480));
   ctxMenu.node = ws.tree;
   ctxMenu.workspace = ws;
 }
@@ -479,22 +485,58 @@ function resolveTargetDir(): { dir: string; workspaceId: string } | null {
   return first ? { dir: first.rootPath, workspaceId: first.id } : null;
 }
 
+function workspaceHeaderTooltip(ws: WorkspaceEntry): string {
+  const defaultName = getDefaultWorkspaceName(ws.rootPath);
+  const aliasLine = ws.name !== defaultName ? `${t("sidebar.wsAliasPrefix", { name: ws.name })}\n` : "";
+  return `${aliasLine}${t("sidebar.wsActualPathPrefix", { path: ws.rootPath })}\n${t("sidebar.wsHeaderHint")}`;
+}
+
+function triggerRenameWorkspaceAlias() {
+  const ws = ctxMenu.workspace;
+  closeContextMenu();
+  if (!ws) return;
+  const defaultName = getDefaultWorkspaceName(ws.rootPath);
+  promptModal.open = true;
+  promptModal.mode = "renameWorkspace";
+  promptModal.title = t("sidebar.promptAliasTitle");
+  promptModal.hint = t("sidebar.promptAliasHint", { path: ws.rootPath, defaultName });
+  promptModal.placeholder = defaultName;
+  promptModal.value = ws.name;
+  promptModal.targetPath = ws.rootPath;
+  promptModal.workspaceId = ws.id;
+  promptModal.isFolder = true;
+}
+
+async function handleCopyWorkspacePath() {
+  const ws = ctxMenu.workspace;
+  closeContextMenu();
+  if (!ws) return;
+  try {
+    await navigator.clipboard.writeText(ws.rootPath);
+    tabsStore.showToast(t("sidebar.copiedWsPath", { path: ws.rootPath }));
+  } catch {
+    tabsStore.showToast(t("sidebar.copyPathFailed"));
+  }
+}
+
 function triggerNewNote(explicitDir?: string, explicitWsId?: string) {
   closeContextMenu();
   const target = explicitDir
     ? { dir: explicitDir, workspaceId: explicitWsId ?? "" }
     : resolveTargetDir();
   if (!target) {
-    tabsStore.showToast("请先添加一个本地笔记文件夹");
+    tabsStore.showToast(t("sidebar.needWorkspaceFirst"));
     return;
   }
   promptModal.open = true;
   promptModal.mode = "newNote";
-  promptModal.title = "新建笔记";
-  promptModal.placeholder = "例如：ESP32开发记录.md";
+  promptModal.title = t("sidebar.promptNewNoteTitle");
+  promptModal.hint = "";
+  promptModal.placeholder = t("sidebar.promptNewNotePlaceholder");
   promptModal.value = "";
   promptModal.targetPath = target.dir;
   promptModal.workspaceId = target.workspaceId;
+  promptModal.isFolder = false;
 }
 
 function triggerNewFolder(explicitDir?: string, explicitWsId?: string) {
@@ -503,16 +545,18 @@ function triggerNewFolder(explicitDir?: string, explicitWsId?: string) {
     ? { dir: explicitDir, workspaceId: explicitWsId ?? "" }
     : resolveTargetDir();
   if (!target) {
-    tabsStore.showToast("请先添加一个本地笔记文件夹");
+    tabsStore.showToast(t("sidebar.needWorkspaceFirst"));
     return;
   }
   promptModal.open = true;
   promptModal.mode = "newFolder";
-  promptModal.title = "新建文件夹";
-  promptModal.placeholder = "输入文件夹名称";
+  promptModal.title = t("sidebar.promptNewFolderTitle");
+  promptModal.hint = "";
+  promptModal.placeholder = t("sidebar.promptNewFolderPlaceholder");
   promptModal.value = "";
   promptModal.targetPath = target.dir;
   promptModal.workspaceId = target.workspaceId;
+  promptModal.isFolder = true;
 }
 
 function triggerRename() {
@@ -521,8 +565,9 @@ function triggerRename() {
   if (!node) return;
   promptModal.open = true;
   promptModal.mode = "rename";
-  promptModal.title = "重命名";
-  promptModal.placeholder = "输入新名称";
+  promptModal.title = t("sidebar.promptRenameTitle");
+  promptModal.hint = "";
+  promptModal.placeholder = t("sidebar.promptRenamePlaceholder");
   promptModal.value = node.name;
   promptModal.targetPath = node.path;
   promptModal.workspaceId = node.workspaceId;
@@ -661,9 +706,9 @@ async function confirmLinkUpdates() {
       await wsStore.refreshWorkspace(linkUpdateModal.workspaceId);
     }
     linkUpdateModal.open = false;
-    tabsStore.showToast(`已同步更新 ${updatedFiles} 篇笔记中的 ${updatedLinks} 处引用链接`);
+    tabsStore.showToast(t("sidebar.linkUpdateSuccess", { files: updatedFiles, links: updatedLinks }));
   } catch (err) {
-    tabsStore.showToast(`同步更新部分失败: ${parseIpcError(err).message}`, 3500);
+    tabsStore.showToast(t("sidebar.linkUpdatePartialFail", { msg: parseIpcError(err).message }), 3500);
   } finally {
     linkUpdateModal.applying = false;
   }
@@ -671,8 +716,14 @@ async function confirmLinkUpdates() {
 
 async function submitPrompt() {
   const val = promptModal.value.trim();
-  if (!val) return;
   const { mode, targetPath, workspaceId, isFolder } = promptModal;
+  if (mode === "renameWorkspace") {
+    promptModal.open = false;
+    wsStore.renameWorkspaceAlias(workspaceId, val);
+    tabsStore.showToast(val ? t("sidebar.aliasSaved", { name: val }) : t("sidebar.aliasReset"));
+    return;
+  }
+  if (!val) return;
   promptModal.open = false;
 
   try {
@@ -688,13 +739,13 @@ async function submitPrompt() {
       wsStore.handlePathRenamed(targetPath, newPath);
       tabsStore.handlePathRenamed(targetPath, newPath);
       if (workspaceId) await wsStore.refreshWorkspace(workspaceId);
-      tabsStore.showToast("重命名成功");
+      tabsStore.showToast(t("sidebar.renameSuccess"));
       if (!isFolder) {
         void checkReferencesAfterRename(targetPath, newPath, workspaceId);
       }
     }
   } catch (err) {
-    tabsStore.showToast(`操作失败: ${parseIpcError(err).message}`, 3500);
+    tabsStore.showToast(t("common.opFailed", { msg: parseIpcError(err).message }), 3500);
   }
 }
 
@@ -706,9 +757,9 @@ async function handleCopyNode() {
   try {
     await ipc.copyPath(node.path, parentDir);
     await wsStore.refreshWorkspace(node.workspaceId);
-    tabsStore.showToast("已创建副本");
+    tabsStore.showToast(t("sidebar.duplicated"));
   } catch (err) {
-    tabsStore.showToast(`复制失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("sidebar.duplicateFailed", { msg: parseIpcError(err).message }));
   }
 }
 
@@ -720,20 +771,20 @@ async function handleDeleteNode() {
     await ipc.deleteToTrash(node.path);
     tabsStore.handlePathDeleted(node.path);
     await wsStore.refreshWorkspace(node.workspaceId);
-    tabsStore.showToast(`已移至回收站: ${node.name}`);
+    tabsStore.showToast(t("sidebar.movedToTrash", { name: node.name }));
   } catch (err) {
-    tabsStore.showToast(`删除失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("sidebar.deleteFailed", { msg: parseIpcError(err).message }));
   }
 }
 
 async function handleRevealInExplorer() {
-  const node = ctxMenu.node;
+  const targetPath = ctxMenu.node?.path ?? ctxMenu.workspace?.rootPath;
   closeContextMenu();
-  if (!node) return;
+  if (!targetPath) return;
   try {
-    await ipc.revealInFileManager(node.path);
+    await ipc.revealInFileManager(targetPath);
   } catch (err) {
-    tabsStore.showToast(`打开失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("sidebar.openFailed", { msg: parseIpcError(err).message }));
   }
 }
 
@@ -743,7 +794,7 @@ async function handleCompareWithActive() {
   if (!node || node.kind !== "markdown") return;
   const active = tabsStore.activeTab;
   if (!active || active.kind !== "markdown") {
-    tabsStore.showToast("请先打开一个 Markdown 文件用于对比");
+    tabsStore.showToast(t("sidebar.needMarkdownForDiff"));
     return;
   }
   await tabsStore.openFilesDiff(active.path, node.path);
@@ -755,9 +806,9 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
     wsStore.handlePathRenamed(payload.srcPath, newPath);
     tabsStore.handlePathRenamed(payload.srcPath, newPath);
     await wsStore.refreshWorkspacesForPaths([payload.srcPath, payload.destDir]);
-    tabsStore.showToast("已移动文件");
+    tabsStore.showToast(t("sidebar.movedFile"));
   } catch (err) {
-    tabsStore.showToast(`移动失败: ${parseIpcError(err).message}`, 3500);
+    tabsStore.showToast(t("sidebar.moveFailed", { msg: parseIpcError(err).message }), 3500);
   }
 }
 </script>
@@ -767,13 +818,13 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
     <!-- Obsidian-style compact top toolbar aligned with TabBar height (38px) -->
     <div class="sidebar-top-bar">
       <div class="toolbar-left">
-        <button class="icon-btn" @click="triggerNewNote()" data-tip="新建笔记 (Ctrl+N)">
+        <button class="icon-btn" @click="triggerNewNote()" :data-tip="t('sidebar.newNoteTip')">
           <FilePlus :size="15" />
         </button>
-        <button class="icon-btn" @click="triggerNewFolder()" data-tip="新建文件夹">
+        <button class="icon-btn" @click="triggerNewFolder()" :data-tip="t('sidebar.newFolderTip')">
           <FolderPlus :size="15" />
         </button>
-        <button class="icon-btn" @click="cycleSortOrder" :data-tip="`全局默认排序: ${sortLabel}&#10;右键单个笔记库或文件夹可独立设置`">
+        <button class="icon-btn" @click="cycleSortOrder" :data-tip="t('sort.globalTip', { label: sortLabel })">
           <ArrowDownAZ v-if="wsStore.sortOrder === 'name-asc'" :size="15" />
           <ArrowDownZA v-else-if="wsStore.sortOrder === 'name-desc'" :size="15" />
           <ClockArrowDown v-else-if="wsStore.sortOrder === 'mtime-desc'" :size="15" />
@@ -783,7 +834,7 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
         <button
           class="icon-btn"
           @click="handleToggleCollapseAllTrees"
-          :data-tip="wsStore.hasAnyExpandedTree ? '收起所有笔记库目录树' : '展开所有笔记库'"
+          :data-tip="wsStore.hasAnyExpandedTree ? t('sidebar.collapseAllTip') : t('sidebar.expandAllTip')"
         >
           <ChevronsDownUp v-if="wsStore.hasAnyExpandedTree" :size="15" />
           <ChevronsUpDown v-else :size="15" />
@@ -792,7 +843,7 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
           class="icon-btn"
           :class="{ active: showRecentView }"
           @click="showRecentView = !showRecentView"
-          data-tip="最近打开"
+          :data-tip="t('sidebar.recentTip')"
         >
           <Clock :size="15" />
         </button>
@@ -803,12 +854,12 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
           class="icon-btn"
           :class="{ active: settings.state.sidebarAutoHide }"
           @click="toggleAutoHide($event)"
-          :data-tip="settings.state.sidebarAutoHide ? '当前：自动隐藏（点击固定侧边栏）' : '当前：固定显示（点击开启自动隐藏）'"
+          :data-tip="settings.state.sidebarAutoHide ? t('sidebar.autoHideOnTip') : t('sidebar.autoHideOffTip')"
         >
           <PinOff v-if="settings.state.sidebarAutoHide" :size="14" />
           <Pin v-else :size="14" />
         </button>
-        <button class="icon-btn" @click="emit('collapse-sidebar')" data-tip="折叠左侧栏 (Ctrl+Shift+B)">
+        <button class="icon-btn" @click="emit('collapse-sidebar')" :data-tip="t('sidebar.collapseSidebarTip')">
           <PanelLeftClose :size="15" />
         </button>
       </div>
@@ -822,12 +873,12 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
           id="folia-unified-search-input"
           v-model="wsStore.filterQuery"
           type="text"
-          placeholder="过滤文件名或搜索内容..."
+          :placeholder="t('sidebar.searchPlaceholder')"
           class="filter-input"
           @keydown.enter="runFullTextSearch"
           @keydown.esc="clearSearch"
         />
-        <button v-if="hasQuery" class="icon-btn-xs" @click="clearSearch" title="清空">
+        <button v-if="hasQuery" class="icon-btn-xs" @click="clearSearch" :title="t('sidebar.clear')">
           <X :size="12" />
         </button>
       </div>
@@ -838,7 +889,7 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
           class="opt-chip"
           :class="{ active: searchCaseSensitive }"
           @click="searchCaseSensitive = !searchCaseSensitive; runFullTextSearch()"
-          data-tip="区分大小写"
+          :data-tip="t('sidebar.caseSensitive')"
         >
           Aa
         </button>
@@ -846,7 +897,7 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
           class="opt-chip"
           :class="{ active: searchWholeWord }"
           @click="searchWholeWord = !searchWholeWord; runFullTextSearch()"
-          data-tip="全字匹配"
+          :data-tip="t('sidebar.wholeWord')"
         >
           \b
         </button>
@@ -854,12 +905,12 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
           class="opt-chip"
           :class="{ active: searchUseRegex }"
           @click="searchUseRegex = !searchUseRegex; runFullTextSearch()"
-          data-tip="正则表达式"
+          :data-tip="t('sidebar.regex')"
         >
           .*
         </button>
-        <select v-model="searchScope" @change="runFullTextSearch" class="scope-select" data-tip="限定搜索范围">
-          <option value="all">全部库</option>
+        <select v-model="searchScope" @change="runFullTextSearch" class="scope-select" :data-tip="t('sidebar.searchScopeTip')">
+          <option value="all">{{ t("sidebar.allWorkspaces") }}</option>
           <option v-for="ws in wsStore.workspaces" :key="ws.id" :value="ws.id">
             {{ ws.name }}
           </option>
@@ -870,11 +921,11 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
     <!-- RECENT FILES VIEW (optional toggle via clock icon) -->
     <div v-if="showRecentView" class="tree-scroll recent-view">
       <div class="section-caption">
-        <span>最近打开</span>
-        <button class="link-mini" @click="showRecentView = false">返回文件树</button>
+        <span>{{ t("sidebar.recentTitle") }}</span>
+        <button class="link-mini" @click="showRecentView = false">{{ t("sidebar.backToTree") }}</button>
       </div>
       <div v-if="tabsStore.recentFiles.length === 0" class="empty-ws">
-        <p>暂无最近打开记录</p>
+        <p>{{ t("sidebar.noRecent") }}</p>
       </div>
       <div
         v-for="item in tabsStore.recentFiles"
@@ -891,16 +942,16 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
     <!-- MAIN FILE TREE + UNIFIED SEARCH RESULTS -->
     <div v-else ref="treeScrollRef" class="tree-scroll">
       <div v-if="wsStore.workspaces.length === 0" class="empty-ws">
-        <p>尚未添加本地笔记文件夹</p>
+        <p>{{ t("sidebar.emptyWorkspaces") }}</p>
         <button class="primary-btn" @click="wsStore.pickAndAddWorkspace()">
-          <Plus :size="15" /><span>打开笔记文件夹</span>
+          <Plus :size="15" /><span>{{ t("sidebar.openFolderBtn") }}</span>
         </button>
       </div>
 
       <template v-else>
         <!-- Filtered File Tree Section -->
         <div v-if="hasQuery" class="section-caption">
-          <span>匹配文件（{{ matchedFileCount }}）</span>
+          <span>{{ t("sidebar.matchedFiles", { count: matchedFileCount }) }}</span>
         </div>
 
         <div
@@ -921,7 +972,7 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
               @mousedown="onWsHeaderMouseDown(wsIdx, $event)"
               @click="handleWorkspaceHeaderClick(ws.id)"
               @contextmenu="openWorkspaceContextMenu($event, ws)"
-              :data-tip="`${ws.rootPath}\n点击展开/收起 · 按住拖动可调整笔记库顺序`"
+              :data-tip="workspaceHeaderTooltip(ws)"
             >
               <ChevronDown v-if="!ws.collapsed" :size="14" class="ws-chevron" />
               <ChevronRight v-else :size="14" class="ws-chevron" />
@@ -930,7 +981,7 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
                 v-if="ws.sortOrder"
                 class="ws-sort-icon"
                 @click.stop="openWorkspaceContextMenu($event, ws)"
-                :data-tip="`独立排序：${sortOrderLabel(ws.sortOrder)}（点击或右键切换）`"
+                :data-tip="t('sort.wsSortTip', { label: sortOrderLabel(ws.sortOrder) })"
               >
                 <ArrowDownAZ v-if="ws.sortOrder === 'name-asc'" :size="13" />
                 <ArrowDownZA v-else-if="ws.sortOrder === 'name-desc'" :size="13" />
@@ -943,7 +994,7 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
                   v-if="wsStore.workspaces.length > 1 && wsIdx > 0"
                   class="ws-action-btn ws-move-btn"
                   @click="wsStore.moveWorkspace(wsIdx, wsIdx - 1)"
-                  data-tip="上移笔记库"
+                  :data-tip="t('sidebar.moveWsUp')"
                 >
                   <ArrowUp :size="13" />
                 </button>
@@ -951,28 +1002,28 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
                   v-if="wsStore.workspaces.length > 1 && wsIdx < wsStore.workspaces.length - 1"
                   class="ws-action-btn ws-move-btn"
                   @click="wsStore.moveWorkspace(wsIdx, wsIdx + 1)"
-                  data-tip="下移笔记库"
+                  :data-tip="t('sidebar.moveWsDown')"
                 >
                   <ArrowDown :size="13" />
                 </button>
                 <button
                   class="ws-action-btn"
                   @click="tabsStore.openTerminalForWorkspace(ws.id, ws.name, ws.rootPath)"
-                  data-tip="在此笔记库打开命令终端"
+                  :data-tip="t('sidebar.openTerminalTip')"
                 >
                   <Terminal :size="14" :stroke-width="2" />
                 </button>
                 <button
                   class="ws-action-btn"
                   @click="triggerNewNote(ws.rootPath, ws.id)"
-                  data-tip="在此笔记库新建笔记"
+                  :data-tip="t('sidebar.newNoteInWsTip')"
                 >
                   <FilePlus :size="14" :stroke-width="2" />
                 </button>
                 <button
                   class="ws-action-btn danger"
                   @click="wsStore.removeWorkspace(ws.id)"
-                  data-tip="移除此笔记库（不删除本地文件）"
+                  :data-tip="t('sidebar.removeWsTip')"
                 >
                   <X :size="14" :stroke-width="2.1" />
                 </button>
@@ -997,14 +1048,14 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
         <!-- Inline Full-Text Search Matches (shown automatically when query is non-empty) -->
         <div v-if="hasQuery" class="content-matches-section">
           <div class="section-caption">
-            <span v-if="searching">正在检索全文...</span>
+            <span v-if="searching">{{ t("sidebar.searchingText") }}</span>
             <span v-else>
-              全文匹配（{{ searchResults.length }} 处{{ searchMeta.truncated ? "+" : "" }}）
+              {{ t("sidebar.fullTextMatches", { count: searchResults.length, plus: searchMeta.truncated ? "+" : "" }) }}
             </span>
           </div>
 
           <div v-if="!searching && groupedSearchResults.length === 0" class="no-matches">
-            无匹配的正文内容
+            {{ t("sidebar.noContentMatches") }}
           </div>
 
           <div
@@ -1032,11 +1083,11 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
 
     <!-- Bottom-left Obsidian-style Footer: Settings at far bottom-left + Add Folder -->
     <div class="sidebar-footer">
-      <button class="footer-icon-btn" @click="emit('open-settings')" data-tip="设置 (Ctrl+,)">
+      <button class="footer-icon-btn" @click="emit('open-settings')" :data-tip="t('sidebar.settingsTip')">
         <Settings :size="16" />
       </button>
-      <button class="add-ws-btn" @click="wsStore.pickAndAddWorkspace()" data-tip="添加本地笔记目录">
-        <Plus :size="14" /><span>添加笔记库</span>
+      <button class="add-ws-btn" @click="wsStore.pickAndAddWorkspace()" :data-tip="t('sidebar.addWorkspaceTip')">
+        <Plus :size="14" /><span>{{ t("sidebar.addWorkspaceBtn") }}</span>
       </button>
     </div>
 
@@ -1044,27 +1095,41 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
     <Teleport to="body">
       <div v-if="ctxMenu.visible" class="ctx-backdrop" @click="closeContextMenu" @contextmenu.prevent="closeContextMenu">
         <div class="ctx-menu" :style="{ left: `${ctxMenu.x}px`, top: `${ctxMenu.y}px` }" @click.stop>
-          <button class="ctx-item" @click="triggerNewNote()"><FilePlus :size="14" /> 新建笔记</button>
-          <button class="ctx-item" @click="triggerNewFolder()"><FolderPlus :size="14" /> 新建文件夹</button>
-          <button
-            v-if="ctxMenu.workspace && (!ctxMenu.node || ctxMenu.node.path === ctxMenu.workspace.rootPath)"
-            class="ctx-item"
-            @click="tabsStore.openTerminalForWorkspace(ctxMenu.workspace.id, ctxMenu.workspace.name, ctxMenu.workspace.rootPath); closeContextMenu()"
-          >
-            <Terminal :size="14" /> 在命令终端中打开
-          </button>
-          <button
+          <div
             v-if="ctxIsWorkspaceRoot && ctxMenu.workspace"
-            class="ctx-item"
-            @click="wsStore.refreshWorkspace(ctxMenu.workspace.id); closeContextMenu()"
+            class="ctx-path-box"
+            @click="handleCopyWorkspacePath"
+            :data-tip="t('sidebar.ctxActualPathTip')"
           >
-            <RefreshCw :size="14" /> 刷新此笔记库
-          </button>
+            <div class="ctx-path-val">{{ ctxMenu.workspace.rootPath }}</div>
+          </div>
+          <button class="ctx-item" @click="triggerNewNote()"><FilePlus :size="14" /> {{ t("sidebar.ctxNewNote") }}</button>
+          <button class="ctx-item" @click="triggerNewFolder()"><FolderPlus :size="14" /> {{ t("sidebar.ctxNewFolder") }}</button>
+          <template v-if="ctxIsWorkspaceRoot && ctxMenu.workspace">
+            <button class="ctx-item" @click="triggerRenameWorkspaceAlias()">
+              <Edit3 :size="14" /> {{ t("sidebar.ctxSetAlias") }}
+            </button>
+            <button class="ctx-item" @click="handleCopyWorkspacePath()">
+              <Copy :size="14" /> {{ t("sidebar.ctxCopyPath") }}
+            </button>
+            <button
+              class="ctx-item"
+              @click="tabsStore.openTerminalForWorkspace(ctxMenu.workspace.id, ctxMenu.workspace.name, ctxMenu.workspace.rootPath); closeContextMenu()"
+            >
+              <Terminal :size="14" /> {{ t("sidebar.ctxOpenTerminal") }}
+            </button>
+            <button
+              class="ctx-item"
+              @click="wsStore.refreshWorkspace(ctxMenu.workspace.id); closeContextMenu()"
+            >
+              <RefreshCw :size="14" /> {{ t("sidebar.ctxRefreshWs") }}
+            </button>
+          </template>
           <div class="ctx-sep" />
           <template v-if="ctxIsFolder">
             <div class="ctx-section-label">
               <ArrowUpDown :size="12" />
-              <span>{{ ctxIsWorkspaceRoot ? "此笔记库排序方式" : "此文件夹排序方式" }}</span>
+              <span>{{ ctxIsWorkspaceRoot ? t("sort.wsSortTitle") : t("sort.folderSortTitle") }}</span>
             </div>
             <button
               class="ctx-item ctx-sort-item"
@@ -1072,7 +1137,7 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
               @click="handleSetContextSort(null)"
             >
               <span class="ctx-check"><Check v-if="ctxExplicitSort === null" :size="13" /></span>
-              <span>{{ ctxIsWorkspaceRoot ? "跟随全局默认" : "跟随上级目录" }}</span>
+              <span>{{ ctxIsWorkspaceRoot ? t("sort.followGlobal") : t("sort.followParent") }}</span>
             </button>
             <button
               v-for="opt in SORT_MENU_OPTIONS"
@@ -1087,17 +1152,17 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
             <div class="ctx-sep" />
           </template>
           <template v-if="ctxMenu.node && !ctxIsWorkspaceRoot">
-            <button class="ctx-item" @click="handleNudgeContextNode(-1)"><ArrowUp :size="14" /> 上移一项（手动排序）</button>
-            <button class="ctx-item" @click="handleNudgeContextNode(1)"><ArrowDown :size="14" /> 下移一项（手动排序）</button>
+            <button class="ctx-item" @click="handleNudgeContextNode(-1)"><ArrowUp :size="14" /> {{ t("sidebar.ctxMoveUp") }}</button>
+            <button class="ctx-item" @click="handleNudgeContextNode(1)"><ArrowDown :size="14" /> {{ t("sidebar.ctxMoveDown") }}</button>
             <div class="ctx-sep" />
-            <button class="ctx-item" @click="triggerRename()"><Edit3 :size="14" /> 重命名</button>
-            <button class="ctx-item" @click="handleCopyNode()"><Copy :size="14" /> 创建副本</button>
-            <button v-if="ctxMenu.node.kind === 'markdown'" class="ctx-item" @click="handleCompareWithActive()"><GitCompare :size="14" /> 与当前打开文件 Diff 对比</button>
+            <button class="ctx-item" @click="triggerRename()"><Edit3 :size="14" /> {{ t("sidebar.ctxRename") }}</button>
+            <button class="ctx-item" @click="handleCopyNode()"><Copy :size="14" /> {{ t("sidebar.ctxDuplicate") }}</button>
+            <button v-if="ctxMenu.node.kind === 'markdown'" class="ctx-item" @click="handleCompareWithActive()"><GitCompare :size="14" /> {{ t("sidebar.ctxDiffActive") }}</button>
           </template>
-          <button class="ctx-item" @click="handleRevealInExplorer()"><ExternalLink :size="14" /> 在文件管理器中显示</button>
+          <button class="ctx-item" @click="handleRevealInExplorer()"><ExternalLink :size="14" /> {{ t("sidebar.ctxRevealExplorer") }}</button>
           <template v-if="ctxMenu.node && !ctxIsWorkspaceRoot">
             <div class="ctx-sep" />
-            <button class="ctx-item danger" @click="handleDeleteNode()"><Trash2 :size="14" /> 移至回收站</button>
+            <button class="ctx-item danger" @click="handleDeleteNode()"><Trash2 :size="14" /> {{ t("sidebar.ctxDeleteTrash") }}</button>
           </template>
         </div>
       </div>
@@ -1105,33 +1170,38 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
       <div v-if="promptModal.open" class="modal-backdrop" @click="promptModal.open = false">
         <div class="prompt-dialog" @click.stop>
           <h3>{{ promptModal.title }}</h3>
+          <p v-if="promptModal.hint" class="prompt-hint">{{ promptModal.hint }}</p>
           <input v-model="promptModal.value" :placeholder="promptModal.placeholder" autofocus @keydown.enter="submitPrompt" @keydown.esc="promptModal.open = false" class="prompt-input" />
           <div class="prompt-actions">
-            <button class="btn-ghost" @click="promptModal.open = false">取消</button>
-            <button class="primary-btn" @click="submitPrompt">确定</button>
+            <button class="btn-ghost" @click="promptModal.open = false">{{ t("common.cancel") }}</button>
+            <button class="primary-btn" @click="submitPrompt">{{ t("common.confirm") }}</button>
           </div>
         </div>
       </div>
 
       <div v-if="linkUpdateModal.open" class="modal-backdrop" @click="!linkUpdateModal.applying && (linkUpdateModal.open = false)">
         <div class="prompt-dialog link-update-dialog" @click.stop>
-          <h3>同步更新引用链接？</h3>
+          <h3>{{ t("sidebar.linkUpdateTitle") }}</h3>
           <p class="link-update-desc">
-            检测到 <strong>{{ linkUpdateModal.entries.length }}</strong> 篇笔记中共有
-            <strong>{{ linkUpdateModal.totalCount }}</strong> 处引用了
-            <code>{{ linkUpdateModal.oldName }}</code>，是否自动更新为
-            <code>{{ linkUpdateModal.newName }}</code>？（支持 <code>[[双链]]</code> 与相对路径链接）
+            {{
+              t("sidebar.linkUpdateDesc", {
+                files: linkUpdateModal.entries.length,
+                links: linkUpdateModal.totalCount,
+                oldName: linkUpdateModal.oldName,
+                newName: linkUpdateModal.newName,
+              })
+            }}
           </p>
           <div class="link-update-list">
             <div v-for="item in linkUpdateModal.entries" :key="item.notePath" class="link-update-row" :title="item.notePath">
               <span class="link-update-name">{{ item.noteName }}</span>
-              <span class="badge">{{ item.count }} 处</span>
+              <span class="badge">{{ t("sidebar.linkUpdateCount", { count: item.count }) }}</span>
             </div>
           </div>
           <div class="prompt-actions">
-            <button class="btn-ghost" :disabled="linkUpdateModal.applying" @click="linkUpdateModal.open = false">保持不变</button>
+            <button class="btn-ghost" :disabled="linkUpdateModal.applying" @click="linkUpdateModal.open = false">{{ t("sidebar.linkUpdateKeep") }}</button>
             <button class="primary-btn" :disabled="linkUpdateModal.applying" @click="confirmLinkUpdates">
-              {{ linkUpdateModal.applying ? "正在更新..." : `同步更新 (${linkUpdateModal.totalCount} 处)` }}
+              {{ linkUpdateModal.applying ? t("sidebar.linkUpdateApplying") : t("sidebar.linkUpdateConfirm", { count: linkUpdateModal.totalCount }) }}
             </button>
           </div>
         </div>
@@ -1334,10 +1404,9 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
   padding: 4px 6px 4px 8px;
   margin: 0 4px;
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   color: var(--sidebar-text-muted);
   cursor: pointer;
   position: relative;
@@ -1527,9 +1596,9 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
   white-space: nowrap;
 }
 
-/* Bottom-left Obsidian-like footer */
+/* Bottom-left Obsidian-like footer (aligned with right pane 32px status bar) */
 .sidebar-footer {
-  height: 40px;
+  height: 32px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1539,8 +1608,8 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
 }
 
 .footer-icon-btn {
-  width: 30px;
-  height: 30px;
+  width: 24px;
+  height: 24px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -1558,7 +1627,7 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
 
 .add-ws-btn {
   flex: 1;
-  height: 28px;
+  height: 23px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1578,7 +1647,10 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
 
 /* Context Menu & Prompt */
 .ctx-backdrop { position: fixed; inset: 0; z-index: 3000; }
-.ctx-menu { position: fixed; width: 218px; background: var(--bg-elevated); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); padding: 5px; display: flex; flex-direction: column; gap: 1px; }
+.ctx-menu { position: fixed; width: 236px; background: var(--bg-elevated); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); padding: 5px; display: flex; flex-direction: column; gap: 1px; }
+.ctx-path-box { padding: 6px 9px; margin-bottom: 3px; border-radius: var(--radius-sm); background: var(--bg-surface); border: 1px solid var(--border-color); cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+.ctx-path-box:hover { border-color: var(--accent); background: var(--accent-soft); }
+.ctx-path-val { font-size: 11.5px; font-family: var(--font-code); color: var(--text-primary); word-break: break-all; line-height: 1.35; }
 .ctx-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; border: none; background: transparent; color: var(--text-primary); font-size: 12.5px; border-radius: var(--radius-sm); cursor: pointer; text-align: left; }
 .ctx-item:hover { background: var(--bg-hover); }
 .ctx-item.danger { color: var(--danger); }
@@ -1589,7 +1661,8 @@ async function handleDropMove(payload: { srcPath: string; destDir: string }) {
 .ctx-sep { height: 1px; background: var(--border-color); margin: 4px 2px; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.35); display: flex; align-items: center; justify-content: center; z-index: 3100; }
 .prompt-dialog { width: 380px; background: var(--bg-elevated); border: 1px solid var(--border-color); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: 18px 20px; }
-.prompt-dialog h3 { margin: 0 0 12px; font-size: 15px; }
+.prompt-dialog h3 { margin: 0 0 10px; font-size: 15px; }
+.prompt-hint { margin: 0 0 10px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); white-space: pre-line; word-break: break-all; }
 .prompt-input { width: 100%; height: 36px; padding: 0 12px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text-primary); font-size: 13.5px; outline: none; }
 .prompt-input:focus { border-color: var(--accent); }
 .prompt-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }

@@ -1,3 +1,5 @@
+import { t, type MessageKey } from "@/core/i18n";
+
 export type GestureActionId =
   | "prevTab"
   | "nextTab"
@@ -48,8 +50,12 @@ export function formatGestureSequence(seq: string): string {
     .join("");
 }
 
+export function getGestureActionLabel(action: GestureActionId): string {
+  return t(`gestures.${action}` as MessageKey);
+}
+
 export function formatGestureLabel(g: GestureDefinition): string {
-  return `${formatGestureSequence(g.sequence)} ${GESTURE_ACTION_LABELS[g.action] ?? g.action}`;
+  return `${formatGestureSequence(g.sequence)} ${getGestureActionLabel(g.action)}`;
 }
 
 export interface MouseGestureControllerOptions {

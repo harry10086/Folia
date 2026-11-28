@@ -9,6 +9,7 @@ import {
   type LineEnding,
   type RecoveryDraft,
 } from "@/core/ipc/client";
+import { destroyTerminalInstance } from "@/core/terminal/terminalRegistry";
 import { useSettingsStore } from "./settings";
 import { useWorkspaceStore } from "./workspace";
 
@@ -113,6 +114,7 @@ function createPaneId(): string {
 export const useTabsStore = defineStore("tabs", () => {
   const panes = ref<EditorPane[]>([{ id: "pane-1", tabs: [], activeTabId: null }]);
   const activePaneId = ref<string>("pane-1");
+  const lastDocumentPaneId = ref<string>("pane-1");
   const splitDirection = ref<SplitDirection>("none");
   const recentFiles = ref<RecentFileEntry[]>([]);
   const recoveryDrafts = ref<RecoveryDraft[]>([]);
@@ -233,13 +235,17 @@ export const useTabsStore = defineStore("tabs", () => {
     const newPanes: EditorPane[] = pickedTabs.map((tab, idx) => {
       const newId = idx === 0 ? "pane-1" : createPaneId();
       tab.paneId = newId;
-      tab.id = `${newId}::${tab.path}`;
+      if (tab.kind !== "terminal") {
+        tab.id = `${newId}::${tab.path}`;
+      }
       const tabsForPane: OpenTab[] = [tab];
       if (idx === 0) {
         for (const extra of leftoverTabs) {
-          if (normPath(extra.path) === normPath(tab.path)) continue;
+          if (extra.kind === tab.kind && normPath(extra.path) === normPath(tab.path)) continue;
           extra.paneId = newId;
-          extra.id = `${newId}::${extra.path}`;
+          if (extra.kind !== "terminal") {
+            extra.id = `${newId}::${extra.path}`;
+          }
           tabsForPane.push(extra);
         }
         // Keep pinned tabs grouped on the left
@@ -259,6 +265,41 @@ export const useTabsStore = defineStore("tabs", () => {
     showToast(`已合并为 ${newPanes.length} 分栏显示`);
   }
 
+  function isTerminalPane(pane: EditorPane): boolean {
+    if (pane.tabs.length === 0) return false;
+    const active = pane.tabs.find((t) => t.id === pane.activeTabId);
+    if (active?.kind === "terminal") return true;
+    return pane.tabs.every((t) => t.kind === "terminal");
+  }
+
+  function markDocumentPaneIfApplicable(pane: EditorPane) {
+    if (!isTerminalPane(pane)) {
+      lastDocumentPaneId.value = pane.id;
+    }
+  }
+
+  function resolveTargetPaneForDocument(explicitPaneId?: string): EditorPane {
+    if (explicitPaneId) {
+      return panes.value.find((p) => p.id === explicitPaneId) ?? panes.value[0];
+    }
+    const cur = panes.value.find((p) => p.id === activePaneId.value) ?? panes.value[0];
+    if (!isTerminalPane(cur)) {
+      return cur;
+    }
+    const remembered = panes.value.find(
+      (p) => p.id === lastDocumentPaneId.value && !isTerminalPane(p)
+    );
+    if (remembered) return remembered;
+
+    const emptyPane = panes.value.find((p) => p.tabs.length === 0);
+    if (emptyPane) return emptyPane;
+
+    const nonTerminalPane = panes.value.find((p) => !isTerminalPane(p));
+    if (nonTerminalPane) return nonTerminalPane;
+
+    return cur;
+  }
+
   async function openFile(
     path: string,
     options?: {
@@ -270,15 +311,17 @@ export const useTabsStore = defineStore("tabs", () => {
       silent?: boolean;
     }
   ): Promise<OpenTab | null> {
-    const targetPaneId = options?.paneId ?? activePaneId.value;
-    const pane = panes.value.find((p) => p.id === targetPaneId) ?? panes.value[0];
+    const pane = resolveTargetPaneForDocument(options?.paneId);
     const wsStore = useWorkspaceStore();
     const settings = useSettingsStore();
 
-    const existing = pane.tabs.find((t) => normPath(t.path) === normPath(path));
+    const existing = pane.tabs.find(
+      (t) => t.kind !== "terminal" && normPath(t.path) === normPath(path)
+    );
     if (existing) {
       pane.activeTabId = existing.id;
       activePaneId.value = pane.id;
+      lastDocumentPaneId.value = pane.id;
       if (options?.line) {
         existing.jumpToLine = options.line;
         existing.jumpNonce++;
@@ -364,12 +407,18 @@ export const useTabsStore = defineStore("tabs", () => {
 
     pane.activeTabId = tab.id;
     activePaneId.value = pane.id;
+    lastDocumentPaneId.value = pane.id;
     pushRecentFile(path, workspaceId);
     wsStore.revealFileInTree(path);
     return tab;
   }
 
   function openTerminalForWorkspace(workspaceId: string, workspaceName: string, cwd: string) {
+    const prevActive = panes.value.find((p) => p.id === activePaneId.value);
+    if (prevActive && !isTerminalPane(prevActive)) {
+      lastDocumentPaneId.value = prevActive.id;
+    }
+
     const termKey = `terminal::${normPath(cwd)}`;
 
     // If a terminal for this workspace is already open, focus it
@@ -399,7 +448,7 @@ export const useTabsStore = defineStore("tabs", () => {
     }
 
     const tab: OpenTab = {
-      id: `${targetPane.id}::${termKey}::${Date.now()}`,
+      id: `${termKey}::${Date.now()}`,
       paneId: targetPane.id,
       path: cwd,
       workspaceId,
@@ -751,8 +800,9 @@ export const useTabsStore = defineStore("tabs", () => {
   function focusPaneAndReveal(paneId: string) {
     activePaneId.value = paneId;
     const pane = panes.value.find((p) => p.id === paneId);
+    if (pane) markDocumentPaneIfApplicable(pane);
     const tab = pane?.tabs.find((t) => t.id === pane.activeTabId);
-    if (tab) useWorkspaceStore().revealFileInTree(tab.path);
+    if (tab && tab.kind !== "terminal") useWorkspaceStore().revealFileInTree(tab.path);
   }
 
   function selectTab(paneId: string, tabId: string) {
@@ -760,8 +810,9 @@ export const useTabsStore = defineStore("tabs", () => {
     if (!pane) return;
     pane.activeTabId = tabId;
     activePaneId.value = paneId;
+    markDocumentPaneIfApplicable(pane);
     const tab = pane.tabs.find((t) => t.id === tabId);
-    if (tab) useWorkspaceStore().revealFileInTree(tab.path);
+    if (tab && tab.kind !== "terminal") useWorkspaceStore().revealFileInTree(tab.path);
   }
 
   function togglePinTab(paneId: string, tabId: string) {
@@ -801,10 +852,13 @@ export const useTabsStore = defineStore("tabs", () => {
     selectedSplitTabIds.value = selectedSplitTabIds.value.filter((id) => id !== tabId);
 
     pane.tabs.splice(idx, 1);
+    if (tab.kind === "terminal") {
+      destroyTerminalInstance(tab.id);
+    }
     if (pane.activeTabId === tabId) {
       const nextTab = pane.tabs[idx] ?? pane.tabs[idx - 1] ?? null;
       pane.activeTabId = nextTab?.id ?? null;
-      if (nextTab) useWorkspaceStore().revealFileInTree(nextTab.path);
+      if (nextTab && nextTab.kind !== "terminal") useWorkspaceStore().revealFileInTree(nextTab.path);
     }
 
     if (panes.value.length > 1 && pane.tabs.length === 0) closeSplitPane(pane.id);
@@ -829,16 +883,22 @@ export const useTabsStore = defineStore("tabs", () => {
 
     for (let i = 1; i < panes.value.length; i++) {
       for (const tab of panes.value[i].tabs) {
-        const exists = primary.tabs.some((t) => normPath(t.path) === normPath(tab.path));
+        const exists = primary.tabs.some(
+          (t) => t.kind === tab.kind && normPath(t.path) === normPath(tab.path)
+        );
         if (!exists) {
           tab.paneId = primary.id;
-          tab.id = `${primary.id}::${tab.path}`;
+          if (tab.kind !== "terminal") {
+            tab.id = `${primary.id}::${tab.path}`;
+          }
           if (tab.pinned) {
             const pCount = primary.tabs.filter((t) => t.pinned).length;
             primary.tabs.splice(pCount, 0, tab);
           } else {
             primary.tabs.push(tab);
           }
+        } else if (tab.kind === "terminal") {
+          destroyTerminalInstance(tab.id);
         }
       }
     }
@@ -903,11 +963,18 @@ export const useTabsStore = defineStore("tabs", () => {
         sourcePane.activeTabId = nextTab?.id ?? null;
       }
       movedTab.paneId = newId;
-      movedTab.id = `${newId}::${movedTab.path}`;
+      if (movedTab.kind !== "terminal") {
+        movedTab.id = `${newId}::${movedTab.path}`;
+      }
     } else {
       // Clone reference if it's the only tab in the pane
       const orig = sourcePane.tabs[tabIdx];
-      movedTab = { ...orig, paneId: newId, id: `${newId}::${orig.path}`, pinned: false };
+      movedTab = {
+        ...orig,
+        paneId: newId,
+        id: orig.kind === "terminal" ? `terminal::${normPath(orig.path)}::${Date.now()}` : `${newId}::${orig.path}`,
+        pinned: false,
+      };
     }
 
     const newPane: EditorPane = { id: newId, tabs: [movedTab], activeTabId: movedTab.id };
@@ -916,8 +983,9 @@ export const useTabsStore = defineStore("tabs", () => {
     panes.value.splice(insertIdx, 0, newPane);
     splitDirection.value = "vertical";
     activePaneId.value = newId;
+    markDocumentPaneIfApplicable(newPane);
     clearSplitSelection();
-    useWorkspaceStore().revealFileInTree(movedTab.path);
+    if (movedTab.kind !== "terminal") useWorkspaceStore().revealFileInTree(movedTab.path);
   }
 
   function moveTabToPane(sourcePaneId: string, tabId: string, targetPaneId: string, insertIndex?: number) {
@@ -935,12 +1003,17 @@ export const useTabsStore = defineStore("tabs", () => {
       sourcePane.activeTabId = nextTab?.id ?? null;
     }
 
-    const existingInTarget = targetPane.tabs.find((t) => normPath(t.path) === normPath(tab.path));
+    const existingInTarget = targetPane.tabs.find(
+      (t) => t.kind === tab.kind && normPath(t.path) === normPath(tab.path)
+    );
     if (existingInTarget) {
+      if (tab.kind === "terminal") destroyTerminalInstance(tab.id);
       targetPane.activeTabId = existingInTarget.id;
     } else {
       tab.paneId = targetPane.id;
-      tab.id = `${targetPane.id}::${tab.path}`;
+      if (tab.kind !== "terminal") {
+        tab.id = `${targetPane.id}::${tab.path}`;
+      }
       const pinnedCount = targetPane.tabs.filter((t) => t.pinned).length;
       const clampedIdx =
         insertIndex !== undefined
@@ -953,11 +1026,12 @@ export const useTabsStore = defineStore("tabs", () => {
     }
 
     activePaneId.value = targetPane.id;
+    markDocumentPaneIfApplicable(targetPane);
     clearSplitSelection();
     if (sourcePane.tabs.length === 0 && panes.value.length > 1) {
       closeSplitPane(sourcePane.id);
     }
-    useWorkspaceStore().revealFileInTree(tab.path);
+    if (tab.kind !== "terminal") useWorkspaceStore().revealFileInTree(tab.path);
   }
 
   function closeSplitPane(paneId: string) {
@@ -968,16 +1042,22 @@ export const useTabsStore = defineStore("tabs", () => {
     const target = panes.value[idx > 0 ? idx - 1 : 1];
 
     for (const tab of closing.tabs) {
-      const exists = target.tabs.some((t) => normPath(t.path) === normPath(tab.path));
+      const exists = target.tabs.some(
+        (t) => t.kind === tab.kind && normPath(t.path) === normPath(tab.path)
+      );
       if (!exists) {
         tab.paneId = target.id;
-        tab.id = `${target.id}::${tab.path}`;
+        if (tab.kind !== "terminal") {
+          tab.id = `${target.id}::${tab.path}`;
+        }
         if (tab.pinned) {
           const pCount = target.tabs.filter((t) => t.pinned).length;
           target.tabs.splice(pCount, 0, tab);
         } else {
           target.tabs.push(tab);
         }
+      } else if (tab.kind === "terminal") {
+        destroyTerminalInstance(tab.id);
       }
     }
 
@@ -986,6 +1066,7 @@ export const useTabsStore = defineStore("tabs", () => {
       target.activeTabId = target.tabs[0].id;
     }
     activePaneId.value = target.id;
+    markDocumentPaneIfApplicable(target);
     if (panes.value.length <= 1) {
       splitDirection.value = "none";
     }
@@ -1048,6 +1129,7 @@ export const useTabsStore = defineStore("tabs", () => {
     const oldNorm = normPath(oldPath);
     for (const pane of panes.value) {
       for (const tab of pane.tabs) {
+        if (tab.kind === "terminal") continue;
         const curNorm = normPath(tab.path);
         if (curNorm === oldNorm) {
           const wasActive = pane.activeTabId === tab.id;
@@ -1071,6 +1153,7 @@ export const useTabsStore = defineStore("tabs", () => {
     const delNorm = normPath(deletedPath);
     for (const pane of panes.value) {
       for (const tab of [...pane.tabs]) {
+        if (tab.kind === "terminal") continue;
         const curNorm = normPath(tab.path);
         if (curNorm === delNorm || curNorm.startsWith(`${delNorm}/`)) {
           if (!tab.dirty) void closeTab(pane.id, tab.id, true);
@@ -1187,6 +1270,7 @@ export const useTabsStore = defineStore("tabs", () => {
     clearSplitSelection,
     toggleSplitTabSelection,
     mergeSelectedTabsToColumns,
+    resolveTargetPaneForDocument,
     openFile,
     restoreLayout,
     openTerminalForWorkspace,

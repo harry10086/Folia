@@ -3,6 +3,9 @@ import { computed, nextTick, ref, watch } from "vue";
 import { Search, FileText, Image as ImageIcon, File as FileIcon } from "lucide-vue-next";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTabsStore } from "@/stores/tabs";
+import { useI18n } from "@/core/i18n";
+
+const { t } = useI18n();
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -58,11 +61,11 @@ function selectItem(path: string, workspaceId: string) {
       <div class="qo-modal" @click.stop @keydown="onKeyDown">
         <div class="qo-input-row">
           <Search :size="16" class="qo-icon" />
-          <input ref="inputRef" v-model="query" placeholder="快速打开笔记或附件（输入文件名模糊匹配）..." class="qo-input" />
+          <input ref="inputRef" v-model="query" :placeholder="t('quickOpen.placeholder')" class="qo-input" />
           <kbd class="qo-kbd">ESC</kbd>
         </div>
         <div class="qo-list">
-          <div v-if="results.length === 0" class="qo-empty">未找到匹配文件</div>
+          <div v-if="results.length === 0" class="qo-empty">{{ t("quickOpen.empty") }}</div>
           <button
             v-for="(item, idx) in results"
             :key="item.path"

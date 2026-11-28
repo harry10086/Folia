@@ -21,6 +21,7 @@ import { LIGHT_THEMES, DARK_THEMES, findThemeById } from "@/core/theme/themes";
 import { parseThemeYaml, serializeThemeToYaml } from "@/core/theme/themeYaml";
 import { useTabsStore } from "@/stores/tabs";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { setLocalePreference, t } from "@/core/i18n";
 import {
   isWikilinkTargetValid,
   parseWikilinkTarget,
@@ -420,5 +421,109 @@ colors:
     expect(res.updated).toContain("参见 [[新笔记]] 和 [[新笔记#安装|安装指南]]。");
     expect(res.updated).toContain("标准链接：[打开](./新笔记.md#sec) 与 `[[旧笔记]]`。");
     expect(res.updated).toContain("```markdown\n[[旧笔记]]\n[示例](./旧笔记.md)\n```");
+  });
+
+  it("supports same-named workspaces on different paths and custom display aliases without changing rootPath", async () => {
+    setActivePinia(createPinia());
+    const wsStore = useWorkspaceStore();
+
+    const ws1 = await wsStore.addWorkspace("D:\\Notes");
+    const ws2 = await wsStore.addWorkspace("E:\\Notes");
+    const ws3 = await wsStore.addWorkspace("D:\\Work\\Notes");
+
+    expect(wsStore.workspaces).toHaveLength(3);
+    expect(ws1!.id).not.toBe(ws2!.id);
+    expect(ws2!.id).not.toBe(ws3!.id);
+
+    // Adding the exact same path again deduplicates cleanly
+    const dup = await wsStore.addWorkspace("d:/notes/");
+    expect(wsStore.workspaces).toHaveLength(3);
+    expect(dup!.id).toBe(ws1!.id);
+
+    // Custom display alias updates only `name`, preserving `rootPath`
+    wsStore.renameWorkspaceAlias(ws1!.id, "个人笔记");
+    wsStore.renameWorkspaceAlias(ws2!.id, "E盘备份");
+    expect(wsStore.workspaces[0].name).toBe("个人笔记");
+    expect(wsStore.workspaces[0].rootPath).toBe("D:\\Notes");
+    expect(wsStore.workspaces[1].name).toBe("E盘备份");
+    expect(wsStore.workspaces[1].rootPath).toBe("E:\\Notes");
+
+    // Empty alias restores default folder name
+    wsStore.renameWorkspaceAlias(ws1!.id, "   ");
+    expect(wsStore.workspaces[0].name).toBe("Notes");
+  });
+
+  it("switches UI translations cleanly across zh-CN, zh-TW, en-US, and ja-JP", () => {
+    setLocalePreference("zh-CN");
+    expect(t("app.windowTitle")).toBe("Folia");
+    expect(t("app.tagline")).toBe("轻量简洁无数据库的 Markdown 笔记工作台");
+    expect(t("sidebar.matchedFiles", { count: 5 })).toBe("匹配文件（5）");
+
+    setLocalePreference("zh-TW");
+    expect(t("app.windowTitle")).toBe("Folia");
+    expect(t("settings.brand")).toBe("設定中心");
+
+    setLocalePreference("en-US");
+    expect(t("app.windowTitle")).toBe("Folia");
+    expect(t("settings.brand")).toBe("Settings");
+    expect(t("sidebar.matchedFiles", { count: 3 })).toBe("Matching Files (3)");
+
+    setLocalePreference("ja-JP");
+    expect(t("app.windowTitle")).toBe("Folia");
+    expect(t("settings.brand")).toBe("設定");
+    expect(t("outline.title")).toBe("アウトライン");
+
+    setLocalePreference("zh-CN");
+  });
+
+  it("routes documents away from terminal panes and keeps terminal tab IDs stable across pane moves", () => {
+    setActivePinia(createPinia());
+    const tabsStore = useTabsStore();
+
+    // Start with empty pane-1 on left, open terminal -> creates pane-2 on right and focuses it
+    const termTab = tabsStore.openTerminalForWorkspace("ws-a", "VaultA", "D:\\VaultA");
+    expect(tabsStore.panes).toHaveLength(2);
+    expect(tabsStore.activePaneId).toBe(tabsStore.panes[1].id);
+
+    // Opening a document while terminal pane is focused should route to left pane-1, NOT overwrite terminal pane
+    const targetForDoc = tabsStore.resolveTargetPaneForDocument();
+    expect(targetForDoc.id).toBe(tabsStore.panes[0].id);
+
+    // Put a mock doc tab in right pane and move terminal to left pane -> docs should route to right pane
+    const rightPane = tabsStore.panes[1];
+    const leftPane = tabsStore.panes[0];
+    const stableTermId = termTab.id;
+    rightPane.tabs.push({
+      id: `${rightPane.id}::D:\\VaultA\\note.md`,
+      paneId: rightPane.id,
+      path: "D:\\VaultA\\note.md",
+      workspaceId: "ws-a",
+      name: "note.md",
+      kind: "markdown",
+      content: "# note",
+      savedContent: "# note",
+      encoding: "UTF-8",
+      hasBom: false,
+      lineEnding: "LF",
+      hash: "h1",
+      mtimeMs: 1,
+      sizeBytes: 6,
+      isLarge: false,
+      editMode: "live",
+      pinned: false,
+      dirty: false,
+      saving: false,
+      externalConflict: null,
+      jumpToLine: null,
+      jumpNonce: 0,
+    });
+    rightPane.activeTabId = rightPane.tabs[rightPane.tabs.length - 1].id;
+
+    tabsStore.moveTabToPane(rightPane.id, stableTermId, leftPane.id);
+    // Terminal ID stays identical so live PTY & xterm scrollback are preserved across panes
+    expect(leftPane.tabs[0].id).toBe(stableTermId);
+    // Active pane is now leftPane (terminal), so next document routes to rightPane (document pane)
+    expect(tabsStore.activePaneId).toBe(leftPane.id);
+    expect(tabsStore.resolveTargetPaneForDocument().id).toBe(rightPane.id);
   });
 });

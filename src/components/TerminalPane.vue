@@ -1,87 +1,57 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import "@xterm/xterm/css/xterm.css";
 import { RotateCcw, Trash2, Terminal as TerminalIcon } from "lucide-vue-next";
-import { ipc, isTauriRuntime, parseIpcError } from "@/core/ipc/client";
+import { ipc, isTauriRuntime } from "@/core/ipc/client";
+import { useI18n } from "@/core/i18n";
 import { useSettingsStore } from "@/stores/settings";
-import type { UnlistenFn } from "@tauri-apps/api/event";
+import {
+  buildXtermTheme,
+  getOrCreateTerminalInstance,
+  startInstanceSession,
+  type LiveTerminalInstance,
+} from "@/core/terminal/terminalRegistry";
+
+const { t } = useI18n();
 
 const props = defineProps<{
+  tabId: string;
   cwd: string;
   workspaceName: string;
+  visible?: boolean;
 }>();
 
 const settings = useSettingsStore();
 
+const inst: LiveTerminalInstance = getOrCreateTerminalInstance(props.tabId, props.cwd, settings.state);
 const hostRef = ref<HTMLDivElement | null>(null);
-const activeShell = ref(settings.state.terminalShell);
-const shellLabel = ref("终端");
-const statusText = ref("正在启动终端...");
-const exited = ref(false);
+const activeShell = inst.activeShell;
+const statusText = inst.statusText;
+const exited = inst.exited;
 
-let term: Terminal | null = null;
-let fitAddon: FitAddon | null = null;
-let sessionId: string | null = null;
-let unlistenData: UnlistenFn | null = null;
-let unlistenExit: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let fitTimer: ReturnType<typeof setTimeout> | null = null;
 
-function buildXtermTheme() {
-  const styles = getComputedStyle(document.documentElement);
-  const isDark = document.documentElement.dataset.themeMode === "dark";
-  const bg = styles.getPropertyValue("--bg-surface").trim() || (isDark ? "#1e1f26" : "#ffffff");
-  const fg = styles.getPropertyValue("--text-primary").trim() || (isDark ? "#e2e8f0" : "#1e293b");
-  const accent = styles.getPropertyValue("--accent").trim() || "#2563eb";
-  const muted = styles.getPropertyValue("--text-muted").trim() || "#64748b";
-
-  return {
-    background: bg,
-    foreground: fg,
-    cursor: accent,
-    cursorAccent: bg,
-    selectionBackground: isDark ? "rgba(124, 143, 248, 0.32)" : "rgba(37, 99, 235, 0.22)",
-    black: isDark ? "#1e293b" : "#334155",
-    red: isDark ? "#f87171" : "#dc2626",
-    green: isDark ? "#4ade80" : "#15803d",
-    yellow: isDark ? "#facc15" : "#b45309",
-    blue: isDark ? "#60a5fa" : "#2563eb",
-    magenta: isDark ? "#c084fc" : "#7c3aed",
-    cyan: isDark ? "#22d3ee" : "#0e7490",
-    white: isDark ? "#e2e8f0" : "#475569",
-    brightBlack: muted,
-    brightRed: isDark ? "#fca5a5" : "#ef4444",
-    brightGreen: isDark ? "#86efac" : "#16a34a",
-    brightYellow: isDark ? "#fde047" : "#ca8a04",
-    brightBlue: isDark ? "#93c5fd" : "#3b82f6",
-    brightMagenta: isDark ? "#d8b4fe" : "#9333ea",
-    brightCyan: isDark ? "#67e8f9" : "#0891b2",
-    brightWhite: isDark ? "#f8fafc" : "#0f172a",
-  };
-}
-
 function applyTerminalOptions() {
-  if (!term) return;
-  term.options.fontFamily =
+  if (inst.disposed) return;
+  inst.term.options.fontFamily =
     settings.state.terminalFont.trim() || "Cascadia Mono, Consolas, JetBrains Mono, monospace";
-  term.options.fontSize = Math.max(10, Math.min(26, settings.state.terminalFontSize || 13));
-  term.options.lineHeight = Math.max(1.0, Math.min(2.0, settings.state.terminalLineHeight || 1.35));
-  term.options.cursorStyle = settings.state.terminalCursorStyle || "bar";
-  term.options.theme = buildXtermTheme();
+  inst.term.options.fontSize = Math.max(10, Math.min(26, settings.state.terminalFontSize || 13));
+  inst.term.options.lineHeight = Math.max(1.0, Math.min(2.0, settings.state.terminalLineHeight || 1.35));
+  inst.term.options.cursorStyle = settings.state.terminalCursorStyle || "bar";
+  inst.term.options.theme = buildXtermTheme();
   scheduleFit();
 }
 
 function scheduleFit() {
   if (fitTimer) clearTimeout(fitTimer);
   fitTimer = setTimeout(() => {
-    if (!fitAddon || !term || !hostRef.value) return;
+    if (inst.disposed || !hostRef.value) return;
     if (hostRef.value.clientWidth < 40 || hostRef.value.clientHeight < 40) return;
     try {
-      fitAddon.fit();
-      if (sessionId && isTauriRuntime()) {
-        void ipc.terminalResize(sessionId, term.cols, term.rows);
+      inst.fitAddon.fit();
+      if (inst.sessionId && isTauriRuntime()) {
+        void ipc.terminalResize(inst.sessionId, inst.term.cols, inst.term.rows);
       }
     } catch {
       // ignore transient zero-size layout
@@ -89,57 +59,14 @@ function scheduleFit() {
   }, 45);
 }
 
-async function killCurrentSession() {
-  const prev = sessionId;
-  sessionId = null;
-  if (prev && isTauriRuntime()) {
-    await ipc.terminalKill(prev).catch(() => {});
-  }
-}
-
-async function startSession() {
-  await killCurrentSession();
-  exited.value = false;
-  statusText.value = "正在启动...";
-
-  if (!isTauriRuntime()) {
-    shellLabel.value = "预览模式";
-    statusText.value = "仅在桌面端运行";
-    term?.writeln("\x1b[33m当前为浏览器预览模式，请在 Tauri 桌面端使用内嵌命令终端。\x1b[0m");
-    return;
-  }
-
-  try {
-    const cols = term?.cols || 80;
-    const rows = term?.rows || 24;
-    const res = await ipc.terminalSpawn({
-      cwd: props.cwd,
-      shellType: activeShell.value,
-      customPath: settings.state.terminalCustomPath || null,
-      cols,
-      rows,
-    });
-    sessionId = res.id;
-    shellLabel.value = res.shellLabel;
-    statusText.value = res.shellLabel;
-    scheduleFit();
-    term?.focus();
-  } catch (err) {
-    const msg = parseIpcError(err).message;
-    statusText.value = "启动失败";
-    exited.value = true;
-    term?.writeln(`\r\n\x1b[31m终端启动失败: ${msg}\x1b[0m\r\n`);
-  }
-}
-
 async function restartTerminal() {
-  term?.clear();
-  await startSession();
+  inst.term.clear();
+  await startInstanceSession(inst, settings.state.terminalCustomPath || null, scheduleFit);
 }
 
 function clearTerminal() {
-  term?.clear();
-  term?.focus();
+  inst.term.clear();
+  inst.term.focus();
 }
 
 function handleShellChange() {
@@ -149,73 +76,62 @@ function handleShellChange() {
 onMounted(async () => {
   if (!hostRef.value) return;
 
-  term = new Terminal({
-    cursorBlink: true,
-    allowProposedApi: false,
-    scrollback: 3000,
-    fontFamily:
-      settings.state.terminalFont.trim() || "Cascadia Mono, Consolas, JetBrains Mono, monospace",
-    fontSize: Math.max(10, Math.min(26, settings.state.terminalFontSize || 13)),
-    lineHeight: Math.max(1.0, Math.min(2.0, settings.state.terminalLineHeight || 1.35)),
-    cursorStyle: settings.state.terminalCursorStyle || "bar",
-    theme: buildXtermTheme(),
-  });
-
-  fitAddon = new FitAddon();
-  term.loadAddon(fitAddon);
-  term.open(hostRef.value);
-
-  // Ctrl+Shift+C copy & Ctrl+Shift+V paste convenience
-  term.attachCustomKeyEventHandler((ev) => {
-    if (ev.type === "keydown" && (ev.ctrlKey || ev.metaKey) && ev.shiftKey) {
-      if (ev.key.toLowerCase() === "c" && term?.hasSelection()) {
-        void navigator.clipboard.writeText(term.getSelection()).catch(() => {});
-        return false;
-      }
-      if (ev.key.toLowerCase() === "v") {
-        void navigator.clipboard.readText().then((txt) => {
-          if (txt && sessionId) void ipc.terminalWrite(sessionId, txt);
-        }).catch(() => {});
-        return false;
-      }
-    }
-    return true;
-  });
-
-  term.onData((data) => {
-    if (sessionId && isTauriRuntime()) {
-      void ipc.terminalWrite(sessionId, data);
-    }
-  });
-
-  if (isTauriRuntime()) {
-    unlistenData = await ipc.onTerminalData((ev) => {
-      if (ev.id === sessionId) {
-        term?.write(ev.data);
-      }
-    });
-    unlistenExit = await ipc.onTerminalExit((ev) => {
-      if (ev.id === sessionId) {
-        sessionId = null;
-        exited.value = true;
-        statusText.value = "进程已退出";
-        term?.writeln("\r\n\x1b[90m[终端进程已结束，点击右上角重启按钮可重新打开]\x1b[0m");
-      }
-    });
-  }
+  // Attach (or re-attach after cross-pane move) the persistent xterm host element
+  hostRef.value.appendChild(inst.containerEl);
 
   if (typeof ResizeObserver !== "undefined") {
     resizeObserver = new ResizeObserver(() => scheduleFit());
     resizeObserver.observe(hostRef.value);
   }
 
-  try {
-    fitAddon.fit();
-  } catch {
-    // ignore
+  if (!inst.started) {
+    inst.started = true;
+    inst.term.open(inst.containerEl);
+
+    if (isTauriRuntime()) {
+      inst.unlistenData = await ipc.onTerminalData((ev) => {
+        if (ev.id === inst.sessionId && !inst.disposed) {
+          inst.term.write(ev.data);
+        }
+      });
+      inst.unlistenExit = await ipc.onTerminalExit((ev) => {
+        if (ev.id === inst.sessionId && !inst.disposed) {
+          inst.sessionId = null;
+          inst.exited.value = true;
+          inst.statusText.value = t("terminal.exited");
+          inst.term.writeln("\r\n\x1b[90m[终端进程已结束，点击右上角重启按钮可重新打开]\x1b[0m");
+        }
+      });
+    }
+
+    try {
+      inst.fitAddon.fit();
+    } catch {
+      // ignore
+    }
+    await startInstanceSession(inst, settings.state.terminalCustomPath || null, scheduleFit);
+  } else {
+    // Re-attached after moving to another pane: preserve running PTY & full scrollback
+    applyTerminalOptions();
+    await nextTick();
+    scheduleFit();
+    if (props.visible !== false) {
+      inst.term.focus();
+    }
   }
-  await startSession();
 });
+
+watch(
+  () => props.visible,
+  (isVisible) => {
+    if (isVisible) {
+      void nextTick(() => {
+        scheduleFit();
+        inst.term.focus();
+      });
+    }
+  }
+);
 
 watch(
   () => [
@@ -236,12 +152,10 @@ watch(
 onBeforeUnmount(() => {
   if (fitTimer) clearTimeout(fitTimer);
   resizeObserver?.disconnect();
-  unlistenData?.();
-  unlistenExit?.();
-  void killCurrentSession();
-  term?.dispose();
-  term = null;
-  fitAddon = null;
+  // Keep PTY & xterm buffer alive in terminalRegistry until the tab is explicitly closed
+  if (inst.containerEl.parentNode === hostRef.value) {
+    inst.containerEl.remove();
+  }
 });
 </script>
 
@@ -254,28 +168,28 @@ onBeforeUnmount(() => {
           v-model="activeShell"
           class="shell-select"
           @change="handleShellChange"
-          data-tip="切换当前终端类型并重启"
+          :data-tip="t('terminal.switchShellTip')"
         >
           <option value="git-bash">Git Bash</option>
           <option value="powershell">PowerShell</option>
-          <option value="cmd">命令提示符 (CMD)</option>
+          <option value="cmd">{{ t("terminal.cmdOption") }}</option>
           <option value="zsh">Zsh / Bash</option>
-          <option value="custom">自定义终端</option>
+          <option value="custom">{{ t("terminal.customOption") }}</option>
         </select>
         <span class="term-cwd" :title="cwd">{{ cwd }}</span>
       </div>
       <div class="term-right">
         <span class="term-status" :class="{ exited }">{{ statusText }}</span>
-        <button class="term-btn" @click="clearTerminal" data-tip="清空屏幕">
+        <button class="term-btn" @click="clearTerminal" :data-tip="t('terminal.clearTip')">
           <Trash2 :size="13" />
         </button>
-        <button class="term-btn" @click="restartTerminal" data-tip="重启终端">
+        <button class="term-btn" @click="restartTerminal" :data-tip="t('terminal.restartTip')">
           <RotateCcw :size="13" />
         </button>
       </div>
     </div>
 
-    <div ref="hostRef" class="terminal-host" @click="term?.focus()" />
+    <div ref="hostRef" class="terminal-host" @click="inst.term.focus()" />
   </div>
 </template>
 

@@ -445,6 +445,14 @@ pub fn hide_to_tray(app: AppHandle, state: State<'_, AppRuntimeState>) {
 }
 
 #[tauri::command]
+pub fn show_main_window(app: AppHandle, state: State<'_, AppRuntimeState>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let should_max = state.was_maximized.load(Ordering::SeqCst);
+        crate::show_main_window_ready(&window, should_max);
+    }
+}
+
+#[tauri::command]
 pub fn quit_app(app: AppHandle, state: State<'_, AppRuntimeState>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false) {

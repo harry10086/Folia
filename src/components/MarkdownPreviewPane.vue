@@ -5,6 +5,9 @@ import { marked } from "marked";
 import { resolveImageSrc, parseAbbreviationDef } from "@/core/markdown/livePreview";
 import { highlightCodeBlock } from "@/core/markdown/codeHighlighter";
 import { HEADING_CUSTOM_ID_RE, slugifyHeading } from "@/core/markdown/outline";
+import { useI18n } from "@/core/i18n";
+
+const { t } = useI18n();
 
 const props = defineProps<{
   content: string;
@@ -266,11 +269,11 @@ onMounted(() => {
 <template>
   <div class="source-preview-shell">
     <div class="source-preview-header">
-      <span class="source-preview-title">实时预览</span>
+      <span class="source-preview-title">{{ t("editor.previewTitle") }}</span>
       <button
         type="button"
         class="source-preview-close"
-        data-tip="关闭右侧预览栏"
+        :data-tip="t('editor.previewCloseTip')"
         @click="emit('close')"
       >
         <X :size="14" />

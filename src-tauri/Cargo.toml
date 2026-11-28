@@ -1,6 +1,6 @@
 [package]
 name = "folia"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lightweight local-first Markdown note manager"
 authors = ["harry <https://mianao.info>"]
 license = "GPL-3.0"

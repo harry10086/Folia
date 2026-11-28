@@ -21,6 +21,27 @@ use terminal::TerminalManager;
 use watcher::{SelfWriteGuard, WatcherService};
 
 static RESTORING_WINDOW: AtomicBool = AtomicBool::new(false);
+static INITIAL_WINDOW_SHOWN: AtomicBool = AtomicBool::new(false);
+
+pub fn show_main_window_ready(window: &tauri::WebviewWindow, should_maximize: bool) {
+    if INITIAL_WINDOW_SHOWN.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    RESTORING_WINDOW.store(true, Ordering::SeqCst);
+    if should_maximize {
+        // Calling maximize() while hidden transitions directly to maximized on Windows,
+        // avoiding the intermediate 1280x820 white frame flash.
+        let _ = window.maximize();
+        let _ = window.show();
+    } else {
+        let _ = window.show();
+    }
+    let _ = window.set_focus();
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(160));
+        RESTORING_WINDOW.store(false, Ordering::SeqCst);
+    });
+}
 
 fn force_focus_window(window: &tauri::WebviewWindow) {
     let _ = window.set_always_on_top(true);
@@ -179,12 +200,21 @@ pub fn run() {
             let state = app.state::<AppRuntimeState>();
             let _ = state.watcher.init(app.handle().clone());
 
-            if let Some(window) = app.get_webview_window("main") {
-                if state.was_maximized.load(Ordering::SeqCst) {
-                    let _ = window.maximize();
+            // Keep window hidden until the frontend finishes hydrating theme & layout,
+            // with a safety fallback so the window always appears even if JS stalls.
+            let fallback_handle = app.handle().clone();
+            let should_max_fallback = state.was_maximized.load(Ordering::SeqCst);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                if !INITIAL_WINDOW_SHOWN.load(Ordering::SeqCst) {
+                    let h = fallback_handle.clone();
+                    let _ = fallback_handle.run_on_main_thread(move || {
+                        if let Some(win) = h.get_webview_window("main") {
+                            show_main_window_ready(&win, should_max_fallback);
+                        }
+                    });
                 }
-                let _ = window.set_focus();
-            }
+            });
 
             let show_item = MenuItem::with_id(app, "tray_show", "显示 Folia", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "tray_quit", "退出 Folia", true, None::<&str>)?;
@@ -293,6 +323,7 @@ pub fn run() {
             commands::terminal_list_shells,
             commands::set_tray_behavior,
             commands::hide_to_tray,
+            commands::show_main_window,
             commands::quit_app,
             commands::history_save_snapshot,
             commands::history_list,

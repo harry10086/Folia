@@ -10,6 +10,9 @@ import { History, X, RotateCcw, Copy, Trash2, GitCompare, FileText, BookmarkPlus
 import { ipc, isTauriRuntime, parseIpcError, type HistoryEntryMeta } from "@/core/ipc/client";
 import { useTabsStore } from "@/stores/tabs";
 import { useSettingsStore } from "@/stores/settings";
+import { useI18n } from "@/core/i18n";
+
+const { t } = useI18n();
 
 const tabsStore = useTabsStore();
 const settings = useSettingsStore();
@@ -47,12 +50,12 @@ function formatTimestamp(ms: number): string {
 
   const todayStr = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
   const dStr = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-  if (todayStr === dStr) return `今天 ${time}`;
+  if (todayStr === dStr) return t("history.today", { time });
 
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
   const yStr = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
-  if (yStr === dStr) return `昨天 ${time}`;
+  if (yStr === dStr) return t("history.yesterday", { time });
 
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
@@ -60,13 +63,13 @@ function formatTimestamp(ms: number): string {
 function reasonLabel(reason: string): string {
   switch (reason) {
     case "manual":
-      return "手动保存";
+      return t("history.reasonManual");
     case "before-restore":
-      return "恢复前备份";
+      return t("history.reasonBeforeRestore");
     case "open":
-      return "编辑前基线";
+      return t("history.reasonOpen");
     default:
-      return "自动快照";
+      return t("history.reasonAuto");
   }
 }
 
@@ -122,7 +125,7 @@ async function loadHistoryList() {
       destroyMerge();
     }
   } catch (err) {
-    tabsStore.showToast(`加载历史版本失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("history.loadFailed", { msg: parseIpcError(err).message }));
   } finally {
     loadingList.value = false;
   }
@@ -140,7 +143,7 @@ async function selectSnapshot(id: string) {
       mountDiffView();
     }
   } catch (err) {
-    tabsStore.showToast(`读取快照失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("history.readFailed", { msg: parseIpcError(err).message }));
   } finally {
     loadingContent.value = false;
   }
@@ -159,13 +162,13 @@ async function handleCreateManualSnapshot() {
       force: true,
     });
     if (created) {
-      tabsStore.showToast("已创建手动版本快照");
+      tabsStore.showToast(t("history.createdToast"));
       await loadHistoryList();
     } else {
-      tabsStore.showToast("当前内容与最新快照一致，无需重复保存");
+      tabsStore.showToast(t("history.duplicateToast"));
     }
   } catch (err) {
-    tabsStore.showToast(`创建快照失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("history.createFailed", { msg: parseIpcError(err).message }));
   }
 }
 
@@ -177,7 +180,7 @@ async function handleDeleteEntry(entry: HistoryEntryMeta) {
     if (selectedId.value === entry.id) selectedId.value = null;
     await loadHistoryList();
   } catch (err) {
-    tabsStore.showToast(`删除快照失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("history.deleteFailed", { msg: parseIpcError(err).message }));
   }
 }
 
@@ -185,9 +188,9 @@ async function handleCopySnapshot() {
   if (!selectedEntry.value) return;
   try {
     await navigator.clipboard.writeText(selectedContent.value);
-    tabsStore.showToast("已复制该历史版本内容到剪贴板");
+    tabsStore.showToast(t("history.copiedToast"));
   } catch {
-    tabsStore.showToast("复制失败");
+    tabsStore.showToast(t("common.copyFailed"));
   }
 }
 
@@ -230,14 +233,14 @@ onBeforeUnmount(() => destroyMerge());
         <div class="history-header">
           <div class="history-title">
             <History :size="16" />
-            <span>本地版本历史 · {{ targetTab.name }}</span>
-            <span class="history-badge-note">仅存于应用数据目录，不修改笔记库</span>
+            <span>{{ t("history.title", { name: targetTab.name }) }}</span>
+            <span class="history-badge-note">{{ t("history.badge") }}</span>
           </div>
           <div class="history-header-actions">
-            <button class="h-btn" @click="handleCreateManualSnapshot" data-tip="立即为当前内容保存一条快照">
-              <BookmarkPlus :size="14" /> 立即创建快照
+            <button class="h-btn" @click="handleCreateManualSnapshot" :data-tip="t('history.createTip')">
+              <BookmarkPlus :size="14" /> {{ t("history.createBtn") }}
             </button>
-            <button class="h-close" @click="tabsStore.closeHistoryModal()" title="关闭">
+            <button class="h-close" @click="tabsStore.closeHistoryModal()" :title="t('common.close')">
               <X :size="17" />
             </button>
           </div>
@@ -246,11 +249,11 @@ onBeforeUnmount(() => destroyMerge());
         <div class="history-body">
           <!-- Left Timeline -->
           <aside class="history-timeline">
-            <div v-if="loadingList" class="h-empty">正在读取历史记录...</div>
+            <div v-if="loadingList" class="h-empty">{{ t("history.loading") }}</div>
             <div v-else-if="entries.length === 0" class="h-empty">
-              <p>该文件暂无历史快照</p>
+              <p>{{ t("history.emptyTitle") }}</p>
               <p class="h-empty-sub">
-                自动保存时每 {{ settings.state.historyIntervalMinutes }} 分钟自动记一条，或按 Ctrl+S / 点击上方按钮立即记录。
+                {{ t("history.emptySub", { mins: settings.state.historyIntervalMinutes }) }}
               </p>
             </div>
             <div
@@ -264,7 +267,7 @@ onBeforeUnmount(() => destroyMerge());
                 <span class="h-entry-time">{{ formatTimestamp(entry.timestampMs) }}</span>
                 <button
                   class="h-entry-del"
-                  title="删除此快照"
+                  :title="t('history.deleteTip')"
                   @click.stop="handleDeleteEntry(entry)"
                 >
                   <Trash2 :size="12" />
@@ -272,7 +275,7 @@ onBeforeUnmount(() => destroyMerge());
               </div>
               <div class="h-entry-meta">
                 <span class="h-reason" :class="`is-${entry.reason}`">{{ reasonLabel(entry.reason) }}</span>
-                <span>{{ entry.chars }} 字 · {{ entry.lines }} 行</span>
+                <span>{{ t("history.metaCharsLines", { chars: entry.chars, lines: entry.lines }) }}</span>
               </div>
             </div>
           </aside>
@@ -282,31 +285,31 @@ onBeforeUnmount(() => destroyMerge());
             <div class="viewer-toolbar">
               <div class="segmented">
                 <button :class="{ active: viewMode === 'diff' }" @click="viewMode = 'diff'">
-                  <GitCompare :size="13" /> 与当前版本对比
+                  <GitCompare :size="13" /> {{ t("history.diffWithCurrent") }}
                 </button>
                 <button :class="{ active: viewMode === 'preview' }" @click="viewMode = 'preview'">
-                  <FileText :size="13" /> 查看该版本全文
+                  <FileText :size="13" /> {{ t("history.viewFull") }}
                 </button>
               </div>
               <div v-if="selectedEntry" class="viewer-actions">
                 <button class="h-btn" @click="handleCopySnapshot">
-                  <Copy :size="13" /> 复制此版本
+                  <Copy :size="13" /> {{ t("history.copyVersion") }}
                 </button>
                 <button class="h-btn primary" @click="handleRestoreSnapshot">
-                  <RotateCcw :size="13" /> 恢复到此版本
+                  <RotateCcw :size="13" /> {{ t("history.restoreVersion") }}
                 </button>
               </div>
             </div>
 
             <div v-if="!selectedEntry" class="viewer-empty">
-              在左侧选择一个时间点即可对比差异或恢复内容
+              {{ t("history.selectHint") }}
             </div>
             <template v-else>
               <div v-if="viewMode === 'diff'" class="diff-subheaders">
-                <div class="sub-pane">历史版本（{{ formatTimestamp(selectedEntry.timestampMs) }}）</div>
-                <div class="sub-pane">当前编辑内容</div>
+                <div class="sub-pane">{{ t("history.paneHistorical", { time: formatTimestamp(selectedEntry.timestampMs) }) }}</div>
+                <div class="sub-pane">{{ t("history.paneCurrent") }}</div>
               </div>
-              <div v-if="loadingContent" class="viewer-empty">加载快照内容中...</div>
+              <div v-if="loadingContent" class="viewer-empty">{{ t("history.loading") }}</div>
               <div v-else-if="viewMode === 'diff'" ref="mergeHostRef" class="history-diff-host" />
               <pre v-else class="history-preview-pre">{{ selectedContent }}</pre>
             </template>

@@ -7,6 +7,9 @@ import { markdown } from "@codemirror/lang-markdown";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { X, GitCompare } from "lucide-vue-next";
 import { useTabsStore } from "@/stores/tabs";
+import { useI18n } from "@/core/i18n";
+
+const { t } = useI18n();
 
 const tabsStore = useTabsStore();
 const mergeHostRef = ref<HTMLDivElement | null>(null);
@@ -55,13 +58,13 @@ async function keepCurrentVersion() {
     <div v-if="tabsStore.diffState.open" class="diff-overlay" @click="tabsStore.closeDiff()">
       <div class="diff-modal" @click.stop>
         <div class="diff-header">
-          <div class="diff-title"><GitCompare :size="16" /><span>文件行级差异对比</span></div>
+          <div class="diff-title"><GitCompare :size="16" /><span>{{ t("diff.title") }}</span></div>
           <div class="diff-actions">
             <template v-if="tabsStore.diffState.conflictTabId">
-              <button class="btn-secondary" @click="useDiskVersion">采用磁盘版本</button>
-              <button class="btn-primary" @click="keepCurrentVersion">保留当前编辑并写入</button>
+              <button class="btn-secondary" @click="useDiskVersion">{{ t("diff.useDisk") }}</button>
+              <button class="btn-primary" @click="keepCurrentVersion">{{ t("diff.keepCurrent") }}</button>
             </template>
-            <button class="icon-close" @click="tabsStore.closeDiff()" title="关闭"><X :size="17" /></button>
+            <button class="icon-close" @click="tabsStore.closeDiff()" :title="t('common.close')"><X :size="17" /></button>
           </div>
         </div>
         <div class="diff-subheaders">

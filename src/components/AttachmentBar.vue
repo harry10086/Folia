@@ -2,8 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Paperclip, FileText, File as FileIcon, Plus, Copy, ExternalLink, RefreshCw } from "lucide-vue-next";
 import { ipc, toAssetUrl, type AttachmentItem } from "@/core/ipc/client";
+import { useI18n } from "@/core/i18n";
 import { useTabsStore } from "@/stores/tabs";
 import { useWorkspaceStore } from "@/stores/workspace";
+
+const { t } = useI18n();
 
 const props = defineProps<{ notePath: string }>();
 
@@ -57,9 +60,9 @@ function insertItem(item: AttachmentItem) {
 async function copyRelPath(item: AttachmentItem) {
   try {
     await navigator.clipboard.writeText(item.relativePath);
-    tabsStore.showToast(`已复制相对路径: ${item.relativePath}`);
+    tabsStore.showToast(t("attachments.copiedRel", { path: item.relativePath }));
   } catch {
-    tabsStore.showToast("复制失败");
+    tabsStore.showToast(t("common.copyFailed"));
   }
 }
 
@@ -80,12 +83,12 @@ onBeforeUnmount(() => {
 <template>
   <div class="attachment-bar">
     <div class="bar-header">
-      <div class="bar-title"><Paperclip :size="14" /><span>当前目录附件（{{ items.length }}）</span></div>
-      <button class="bar-btn" @click="refresh" title="刷新附件"><RefreshCw :size="13" :class="{ spin: loading }" /></button>
+      <div class="bar-title"><Paperclip :size="14" /><span>{{ t("attachments.title", { count: items.length }) }}</span></div>
+      <button class="bar-btn" @click="refresh" :title="t('attachments.refreshTip')"><RefreshCw :size="13" :class="{ spin: loading }" /></button>
     </div>
 
     <div class="bar-list">
-      <div v-if="items.length === 0" class="bar-empty">当前笔记所在目录及 images/附件 子目录中暂无图片或附件</div>
+      <div v-if="items.length === 0" class="bar-empty">{{ t("attachments.empty") }}</div>
       <div v-for="item in items" :key="item.path" class="attach-card">
         <div class="attach-thumb" @click="openItem(item)" :title="item.relativePath">
           <img v-if="item.kind === 'image'" :src="toAssetUrl(item.path, item.mtimeMs)" :alt="item.name" loading="lazy" />
@@ -97,9 +100,9 @@ onBeforeUnmount(() => {
           <div class="attach-size">{{ formatSize(item.sizeBytes) }}</div>
         </div>
         <div class="attach-actions">
-          <button class="mini-btn" @click="insertItem(item)" title="插入到编辑器"><Plus :size="13" /></button>
-          <button class="mini-btn" @click="copyRelPath(item)" title="复制相对路径"><Copy :size="12" /></button>
-          <button class="mini-btn" @click="ipc.revealInFileManager(item.path)" title="在资源管理器中显示"><ExternalLink :size="12" /></button>
+          <button class="mini-btn" @click="insertItem(item)" :title="t('attachments.insertTip')"><Plus :size="13" /></button>
+          <button class="mini-btn" @click="copyRelPath(item)" :title="t('attachments.copyRelTip')"><Copy :size="12" /></button>
+          <button class="mini-btn" @click="ipc.revealInFileManager(item.path)" :title="t('attachments.revealTip')"><ExternalLink :size="12" /></button>
         </div>
       </div>
     </div>

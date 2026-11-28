@@ -23,6 +23,9 @@ import {
   sortOrderLabel,
   useWorkspaceStore,
 } from "@/stores/workspace";
+import { useI18n } from "@/core/i18n";
+
+const { t } = useI18n();
 
 const props = defineProps<{
   node: FileNode;
@@ -207,7 +210,7 @@ function handleDrop(event: DragEvent) {
       <span
         v-if="explicitSort"
         class="folder-sort-icon"
-        :data-tip="`此文件夹独立排序：${sortOrderLabel(explicitSort)}`"
+        :data-tip="t('sort.folderSortTip', { label: sortOrderLabel(explicitSort) })"
       >
         <ArrowDownAZ v-if="explicitSort === 'name-asc'" :size="13" />
         <ArrowDownZA v-else-if="explicitSort === 'name-desc'" :size="13" />

@@ -1,9 +1,14 @@
 import { isMacPlatform } from "@/core/ipc/client";
+import { t, type MessageKey } from "@/core/i18n";
 
 export interface ShortcutBinding {
   id: string;
   label: string;
   combo: string; // e.g. "Mod+S", "Mod+Shift+F"
+}
+
+export function getShortcutLabel(id: string): string {
+  return t(`shortcuts.${id}` as MessageKey);
 }
 
 export const DEFAULT_SHORTCUTS: ShortcutBinding[] = [
@@ -33,7 +38,7 @@ export function getEffectiveShortcuts(customMap?: Record<string, string>): Short
 }
 
 export function formatComboForPlatform(combo: string): string {
-  if (!combo) return "未绑定";
+  if (!combo) return t("settings.shortcutUnbound");
   const mac = isMacPlatform();
   return combo
     .replace(/Mod/g, mac ? "⌘" : "Ctrl")

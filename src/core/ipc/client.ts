@@ -420,6 +420,10 @@ export const ipc = {
     return invoke<void>("hide_to_tray");
   },
 
+  showMainWindow(): Promise<void> {
+    return invoke<void>("show_main_window");
+  },
+
   quitApp(): Promise<void> {
     return invoke<void>("quit_app");
   },

@@ -8,8 +8,14 @@ import {
 import type { ThemePalette } from "@/core/theme/themes";
 import { ipc, isTauriRuntime } from "@/core/ipc/client";
 import { DEFAULT_GESTURES, type GestureActionId, type GestureDefinition } from "@/core/gestures/mouseGestures";
+import {
+  isValidLocalePreference,
+  setLocalePreference,
+  type LocalePreference,
+} from "@/core/i18n";
 
 export interface AppSettings extends ThemeSettings {
+  language: LocalePreference;
   defaultEditMode: "live" | "source";
   showSourcePreview: boolean;
   showLineNumbers: boolean;
@@ -48,6 +54,7 @@ function cloneDefaultGestures(): GestureDefinition[] {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  language: "auto",
   appearance: "light",
   lightThemeId: "studio-daylight",
   darkThemeId: "obsidian-night",
@@ -116,6 +123,10 @@ export const useSettingsStore = defineStore("settings", () => {
     applyThemeToDocument(state);
   }
 
+  function applyLanguage() {
+    setLocalePreference(isValidLocalePreference(state.language) ? state.language : "auto");
+  }
+
   function syncTrayBehavior() {
     if (isTauriRuntime()) {
       void ipc.setTrayBehavior(state.minimizeToTray, state.closeToTray).catch(() => {});
@@ -145,6 +156,7 @@ export const useSettingsStore = defineStore("settings", () => {
           : cloneDefaultGestures(),
     });
     applyTheme();
+    applyLanguage();
     syncTrayBehavior();
   }
 
@@ -243,6 +255,7 @@ export const useSettingsStore = defineStore("settings", () => {
       customGestures: cloneDefaultGestures(),
     });
     applyTheme();
+    applyLanguage();
   }
 
   watch(
@@ -255,6 +268,7 @@ export const useSettingsStore = defineStore("settings", () => {
     }),
     () => {
       applyTheme();
+      applyLanguage();
       syncTrayBehavior();
       if (persistTimer) clearTimeout(persistTimer);
       persistTimer = setTimeout(() => {
@@ -275,6 +289,7 @@ export const useSettingsStore = defineStore("settings", () => {
   }
 
   applyTheme();
+  applyLanguage();
 
   return {
     state,

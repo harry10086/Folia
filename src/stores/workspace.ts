@@ -1,6 +1,7 @@
 import { acceptHMRUpdate, defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { ipc, isTauriRuntime, type FileNode } from "@/core/ipc/client";
+import { t } from "@/core/i18n";
 import { useSettingsStore } from "./settings";
 
 export type SortOrder = "name-asc" | "name-desc" | "mtime-desc" | "mtime-asc" | "manual";
@@ -20,15 +21,15 @@ export function isValidSortOrder(v: unknown): v is SortOrder {
 export function sortOrderLabel(order: SortOrder): string {
   switch (order) {
     case "name-asc":
-      return "名称 A → Z";
+      return t("sort.nameAsc");
     case "name-desc":
-      return "名称 Z → A";
+      return t("sort.nameDesc");
     case "mtime-desc":
-      return "修改时间（新 → 旧）";
+      return t("sort.mtimeDesc");
     case "mtime-asc":
-      return "修改时间（旧 → 新）";
+      return t("sort.mtimeAsc");
     case "manual":
-      return "手动排序";
+      return t("sort.manual");
   }
 }
 
@@ -58,6 +59,11 @@ export interface WorkspaceEntry {
 
 export function normalizePathKey(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+export function getDefaultWorkspaceName(rootPath: string): string {
+  const parts = rootPath.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || rootPath;
 }
 
 export function getParentPath(p: string): string {
@@ -515,7 +521,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   }
 
   async function pickAndAddWorkspace(): Promise<WorkspaceEntry | null> {
-    const dir = await ipc.pickFolderDialog("添加本地笔记文件夹");
+    const dir = await ipc.pickFolderDialog(t("sidebar.pickFolderTitle"));
     if (!dir) return null;
     return addWorkspace(dir);
   }
@@ -530,6 +536,17 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     if (ws) {
       ws.collapsed = !ws.collapsed;
     }
+  }
+
+  /**
+   * Set a custom display alias for a workspace (stored only in config.json; never renames the disk folder).
+   * Passing an empty/whitespace string resets the display name back to the folder's default name.
+   */
+  function renameWorkspaceAlias(id: string, alias: string) {
+    const ws = workspaces.value.find((w) => w.id === id);
+    if (!ws) return;
+    const trimmed = alias.trim();
+    ws.name = trimmed || getDefaultWorkspaceName(ws.rootPath);
   }
 
   function moveWorkspace(fromIndex: number, toIndex: number) {
@@ -674,6 +691,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     pickAndAddWorkspace,
     removeWorkspace,
     toggleWorkspaceCollapsed,
+    renameWorkspaceAlias,
     moveWorkspace,
     hasAnyExpandedTree,
     collapseAllTrees,

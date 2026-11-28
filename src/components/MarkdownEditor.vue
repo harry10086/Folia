@@ -41,7 +41,10 @@ import type { OpenTab } from "@/stores/tabs";
 import { useSettingsStore } from "@/stores/settings";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTabsStore } from "@/stores/tabs";
+import { useI18n } from "@/core/i18n";
 import Minimap from "./Minimap.vue";
+
+const { t } = useI18n();
 
 const props = defineProps<{ tab: OpenTab }>();
 
@@ -138,7 +141,7 @@ async function handleLinkNavigation(href: string, isWiki: boolean) {
       await tabsStore.openFile(match.path, { paneId: props.tab.paneId, workspaceId: match.workspaceId });
       if (parsed.anchor) setTimeout(() => jumpToHeadingSlug(parsed.anchor), 100);
     } else {
-      tabsStore.showToast(`未在当前工作区找到笔记: ${parsed.filePart || target}`);
+      tabsStore.showToast(t("editor.noteNotFound", { name: parsed.filePart || target }));
     }
     return;
   }
@@ -156,7 +159,7 @@ async function handleLinkNavigation(href: string, isWiki: boolean) {
       await ipc.openSystemPath(abs);
     }
   } catch (err) {
-    tabsStore.showToast(`无法打开链接: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("editor.cannotOpenLink", { msg: parseIpcError(err).message }));
   }
 }
 
@@ -166,7 +169,7 @@ function jumpToHeadingSlug(slug: string) {
   if (lineNo !== null) {
     scrollToLine(lineNo);
   } else {
-    tabsStore.showToast(`未找到目标标题或锚点: #${slug}`);
+    tabsStore.showToast(t("editor.anchorNotFound", { slug }));
   }
 }
 
@@ -181,7 +184,7 @@ function jumpToFootnote(footnoteId: string) {
       return;
     }
   }
-  tabsStore.showToast(`未找到脚注定义 [^${footnoteId}]:`);
+  tabsStore.showToast(t("editor.footnoteNotFound", { id: footnoteId }));
 }
 
 function scrollToLine(lineNumber: number) {
@@ -257,9 +260,9 @@ async function handleImageBlobSave(blob: Blob, suggestedName?: string) {
     const alt = suggestedName ? suggestedName.replace(/\.[^.]+$/, "") : "image";
     insertTextAtCursor(`![${alt}](${rel})`);
     if (ws) void wsStore.refreshWorkspace(ws.id);
-    tabsStore.showToast(`图片已保存至 ${saved.relativePath}`);
+    tabsStore.showToast(t("editor.imageSaved", { path: saved.relativePath }));
   } catch (err) {
-    tabsStore.showToast(`保存图片失败: ${parseIpcError(err).message}`);
+    tabsStore.showToast(t("editor.imageSaveFailed", { msg: parseIpcError(err).message }));
   }
 }
 
@@ -295,7 +298,7 @@ function handleDomDrop(event: DragEvent): boolean {
         const stem = name.replace(/\.[^.]+$/, "");
         insertTextAtCursor(kind === "image" ? `![${stem}](${rel})` : `[${stem}](${rel})`);
       } catch (err) {
-        tabsStore.showToast(`插入链接失败: ${parseIpcError(err).message}`);
+        tabsStore.showToast(t("editor.insertLinkFailed", { msg: parseIpcError(err).message }));
       }
     })();
     return true;

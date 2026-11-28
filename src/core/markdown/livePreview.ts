@@ -1818,8 +1818,9 @@ export function decorateInlinePatterns(
 
 function createBlockWidgetsField(cb: LivePreviewCallbacks) {
   const compute = (state: EditorView["state"]): DecorationSet => {
-    if (!cb.isLiveMode() || cb.isLargeFile()) return Decoration.none;
-    const doc = state.doc;
+    try {
+      if (!cb.isLiveMode() || cb.isLargeFile()) return Decoration.none;
+      const doc = state.doc;
     const builder = new RangeSetBuilder<Decoration>();
     const focused = state.field(editorFocusedField, false) ?? false;
     const selRanges = state.selection.ranges;
@@ -1898,6 +1899,10 @@ function createBlockWidgetsField(cb: LivePreviewCallbacks) {
     }
 
     return builder.finish();
+    } catch (err) {
+      console.error("Folia block widget decoration error:", err);
+      return Decoration.none;
+    }
   };
 
   return StateField.define<DecorationSet>({
