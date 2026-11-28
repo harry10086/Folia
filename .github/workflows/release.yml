@@ -78,7 +78,7 @@ jobs:
           releaseBody: |
             ## Folia v__VERSION__
 
-            轻量、本地文件夹优先、零隐藏数据库的跨平台 Markdown 笔记工作台。
+            轻量简洁、零隐藏数据库的跨平台 Markdown 笔记工作台。
 
             ### 本次更新要点 (v0.1.1)
             - **本地编辑版本历史**：默认每 5 分钟自动记录去重快照（存放在应用数据目录，零笔记库污染），支持 Diff 对比、预览与一键恢复。
@@ -94,6 +94,8 @@ jobs:
             - **Windows (x64)**：
               - 便携版（免安装解压即用，配置保存在程序目录 `data/`）：下载 `Folia___VERSION___x64-portable.zip`
               - 安装版：下载 `.exe`（NSIS 安装包）或 `.msi`
+              > Folia.exe 同级目录有 portable.txt：启用便携模式，自动在 .exe 同级生成并读写 data/
+              > Folia.exe 同级目录没有 portable.txt：自动读写 %APPDATA%\Folia
             - **macOS**：Apple Silicon（M1/M2/M3/M4）下载 `aarch64.dmg`；Intel 芯片下载 `x64.dmg`
             - **Linux (x64)**：下载 `.AppImage`、`.deb` 或 `.rpm`
 
